@@ -79,6 +79,7 @@ export interface StandardAcpAdapterOptions {
     readonly runtime: AcpSessionRuntimeShape;
     readonly sessionId: string;
     readonly content: string;
+    readonly contentBlocks: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
   readonly makeRuntime: (
     input: {
@@ -238,36 +239,6 @@ function applyRequestedSessionConfiguration(input: {
   });
 }
 
-function readTextOnlyActivePromptMessage(
-  input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
-  context: {
-    readonly provider: ProviderDriverKind;
-    readonly runtimeLabel: string;
-    readonly method: string;
-  },
-): Effect.Effect<string, ProviderAdapterValidationError | ProviderAdapterRequestError> {
-  const content = input.input?.trim() ?? "";
-  if (!content) {
-    return Effect.fail(
-      new ProviderAdapterValidationError({
-        provider: context.provider,
-        operation: "sendTurn",
-        issue: "Active prompt steering requires non-empty text.",
-      }),
-    );
-  }
-  if (input.attachments && input.attachments.length > 0) {
-    return Effect.fail(
-      new ProviderAdapterRequestError({
-        provider: context.provider,
-        method: context.method,
-        detail: `${context.runtimeLabel} can only steer an active prompt with text. Stop the current turn before sending attachments.`,
-      }),
-    );
-  }
-  return Effect.succeed(content);
-}
-
 function selectAutoApprovedPermissionOption(
   request: EffectAcpSchema.RequestPermissionRequest,
 ): string | undefined {
@@ -424,6 +395,58 @@ export function makeStandardAcpAdapter(
       }
       return Effect.succeed(ctx);
     };
+
+    const buildPromptContentBlocks = (
+      input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
+      method: string,
+    ) =>
+      Effect.gen(function* () {
+        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
+        if (input.input?.trim()) {
+          promptParts.push({ type: "text", text: input.input.trim() });
+        }
+        if (input.attachments && input.attachments.length > 0) {
+          for (const attachment of input.attachments) {
+            const attachmentPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (!attachmentPath) {
+              return yield* new ProviderAdapterRequestError({
+                provider,
+                method,
+                detail: `Invalid attachment id '${attachment.id}'.`,
+              });
+            }
+            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider,
+                    method,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            promptParts.push({
+              type: "image",
+              data: Buffer.from(bytes).toString("base64"),
+              mimeType: attachment.mimeType,
+            });
+          }
+        }
+
+        if (promptParts.length === 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider,
+            operation: "sendTurn",
+            issue: "Turn requires non-empty text or attachments.",
+          });
+        }
+
+        return promptParts;
+      });
 
     const stopSessionInternal = (ctx: StandardAcpSessionContext) =>
       Effect.gen(function* () {
@@ -724,19 +747,24 @@ export function makeStandardAcpAdapter(
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        const activePrompt = ctx.activePrompt;
-        if (activePrompt && options.sendMessageWhilePromptActive) {
+        const activePromptTurnId = ctx.activePrompt?.turnId ?? ctx.activeTurnId;
+        if (activePromptTurnId && options.sendMessageWhilePromptActive) {
           const method = options.activePromptMessageMethod ?? "session/message";
-          const content = yield* readTextOnlyActivePromptMessage(input, {
-            provider,
-            runtimeLabel: options.runtimeLabel,
-            method,
-          });
+          const contentBlocks = yield* buildPromptContentBlocks(input, method);
+          const content = contentBlocks
+            .filter(
+              (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
+                block.type === "text",
+            )
+            .map((block) => block.text)
+            .join("\n")
+            .trim();
           yield* options
             .sendMessageWhilePromptActive({
               runtime: ctx.acp,
               sessionId: ctx.acpSessionId,
               content,
+              contentBlocks,
             })
             .pipe(
               Effect.mapError((error) =>
@@ -744,9 +772,11 @@ export function makeStandardAcpAdapter(
               ),
             );
 
+          ctx.activePrompt = { turnId: activePromptTurnId };
+          ctx.activeTurnId = activePromptTurnId;
           ctx.session = {
             ...ctx.session,
-            activeTurnId: activePrompt.turnId,
+            activeTurnId: activePromptTurnId,
             updatedAt: yield* nowIso,
           };
 
@@ -755,13 +785,13 @@ export function makeStandardAcpAdapter(
             ...(yield* makeEventStamp()),
             provider,
             threadId: input.threadId,
-            turnId: activePrompt.turnId,
+            turnId: activePromptTurnId,
             payload: {},
           });
 
           return {
             threadId: input.threadId,
-            turnId: activePrompt.turnId,
+            turnId: activePromptTurnId,
             resumeCursor: ctx.session.resumeCursor,
           };
         }
@@ -781,49 +811,7 @@ export function makeStandardAcpAdapter(
             mapAcpToAdapterError(provider, input.threadId, method, cause),
         });
 
-        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
-        }
-        if (input.attachments && input.attachments.length > 0) {
-          for (const attachment of input.attachments) {
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment,
-            });
-            if (!attachmentPath) {
-              return yield* new ProviderAdapterRequestError({
-                provider,
-                method: "session/prompt",
-                detail: `Invalid attachment id '${attachment.id}'.`,
-              });
-            }
-            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterRequestError({
-                    provider,
-                    method: "session/prompt",
-                    detail: cause.message,
-                    cause,
-                  }),
-              ),
-            );
-            promptParts.push({
-              type: "image",
-              data: Buffer.from(bytes).toString("base64"),
-              mimeType: attachment.mimeType,
-            });
-          }
-        }
-
-        if (promptParts.length === 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider,
-            operation: "sendTurn",
-            issue: "Turn requires non-empty text or attachments.",
-          });
-        }
+        const promptParts = yield* buildPromptContentBlocks(input, "session/prompt");
 
         ctx.activePrompt = { turnId };
         ctx.activeTurnId = turnId;
@@ -855,6 +843,9 @@ export function makeStandardAcpAdapter(
               Effect.sync(() => {
                 if (ctx.activePrompt?.turnId === turnId) {
                   ctx.activePrompt = undefined;
+                }
+                if (ctx.activeTurnId === turnId) {
+                  ctx.activeTurnId = undefined;
                 }
               }),
             ),

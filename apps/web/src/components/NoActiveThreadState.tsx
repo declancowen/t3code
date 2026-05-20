@@ -5,8 +5,8 @@ import { cn } from "~/lib/utils";
 
 export function NoActiveThreadState() {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl border border-border bg-background">
+    <SidebarInset className="app-sidebar-backing h-dvh min-h-0 overflow-hidden overscroll-y-none text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl bg-background">
         <header
           className={cn(
             "px-3 sm:px-5",

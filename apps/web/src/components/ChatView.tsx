@@ -2657,10 +2657,6 @@ export default function ChatView(props: ChatViewProps) {
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
     });
-    if (phase === "running" && composerImages.length > 0) {
-      setThreadError(activeThread.id, "Stop the current turn before sending images.");
-      return;
-    }
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -3512,7 +3508,7 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl border border-border bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl bg-background">
       {/* Top bar */}
       <header
         className={cn(

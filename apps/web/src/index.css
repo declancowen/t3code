@@ -217,6 +217,10 @@ body::after {
   background-size: 256px 256px;
 }
 
+html[data-appearance-theme="lobster"] body::after {
+  content: none;
+}
+
 pre,
 code {
   font-family: var(--app-font-mono);
@@ -269,7 +273,17 @@ html[data-use-pointer-cursors="false"]
 }
 
 html[data-translucent-sidebar="true"] [data-slot="sidebar-inner"] {
-  background-color: color-mix(in srgb, var(--sidebar) 78%, transparent);
+  background-color: color-mix(in srgb, var(--sidebar) 78%, var(--background)) !important;
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+.app-sidebar-backing {
+  background-color: var(--sidebar) !important;
+}
+
+html[data-translucent-sidebar="true"] .app-sidebar-backing {
+  background-color: color-mix(in srgb, var(--sidebar) 78%, var(--background)) !important;
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }

@@ -62,8 +62,8 @@ function SettingsContentLayout() {
   }, [navigateBackWithinApp]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl border border-border bg-background text-foreground">
+    <SidebarInset className="app-sidebar-backing h-dvh min-h-0 overflow-hidden overscroll-y-none text-foreground isolate">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl bg-background text-foreground">
         {!isElectron && (
           <header className="px-3 py-2 sm:px-5">
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
