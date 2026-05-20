@@ -62,6 +62,8 @@ import {
   updatePrimaryEnvironmentDescriptor,
 } from "../environments/primary";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
+import { applyDocumentAppearanceSettings } from "../appearance";
+import { useTheme } from "../hooks/useTheme";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -137,6 +139,7 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <SshPasswordPromptDialog />
         <HostedStaticEnvironmentBootstrap />
+        <AppearanceSettingsBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
@@ -149,6 +152,48 @@ function RootRouteView() {
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+function AppearanceSettingsBootstrap() {
+  const settings = useSettings();
+  const { resolvedTheme } = useTheme();
+  const appearanceChatFontFamily = settings.appearanceChatFontFamily;
+  const appearanceChatFontSize = settings.appearanceChatFontSize;
+  const appearanceContrast = settings.appearanceContrast;
+  const appearanceFontSmoothing = settings.appearanceFontSmoothing;
+  const appearanceReduceMotion = settings.appearanceReduceMotion;
+  const appearanceTheme = settings.appearanceTheme;
+  const appearanceTranslucentSidebar = settings.appearanceTranslucentSidebar;
+  const appearanceUsePointerCursors = settings.appearanceUsePointerCursors;
+
+  useEffect(() => {
+    applyDocumentAppearanceSettings(
+      {
+        appearanceChatFontFamily,
+        appearanceChatFontSize,
+        appearanceContrast,
+        appearanceFontSmoothing,
+        appearanceReduceMotion,
+        appearanceTheme,
+        appearanceTranslucentSidebar,
+        appearanceUsePointerCursors,
+      },
+      resolvedTheme,
+    );
+    syncBrowserChromeTheme();
+  }, [
+    appearanceChatFontFamily,
+    appearanceChatFontSize,
+    appearanceContrast,
+    appearanceFontSmoothing,
+    appearanceReduceMotion,
+    appearanceTheme,
+    appearanceTranslucentSidebar,
+    appearanceUsePointerCursors,
+    resolvedTheme,
+  ]);
+
+  return null;
 }
 
 function HostedStaticEnvironmentBootstrap() {

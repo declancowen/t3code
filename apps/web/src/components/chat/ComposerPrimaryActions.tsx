@@ -1,5 +1,5 @@
 import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, SendIcon, SquareIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -23,6 +23,7 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
+  hasTextualSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -51,6 +52,56 @@ const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
 
+function SendButton({
+  compact,
+  disabled,
+  busy,
+  ariaLabel,
+  pointerFocusProps,
+}: {
+  compact: boolean;
+  disabled: boolean;
+  busy: boolean;
+  ariaLabel: string;
+  pointerFocusProps: { onPointerDown: typeof preventPointerFocus } | undefined;
+}) {
+  return (
+    <button
+      type="submit"
+      className={cn(
+        "enabled:cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:pointer-events-none disabled:opacity-30 disabled:hover:scale-100",
+        compact ? "flex size-8" : "flex h-9 w-9 sm:h-8 sm:w-8",
+      )}
+      {...pointerFocusProps}
+      disabled={disabled}
+      aria-label={ariaLabel}
+    >
+      {busy ? (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="animate-spin"
+          aria-hidden="true"
+        >
+          <circle
+            cx="7"
+            cy="7"
+            r="5.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeDasharray="20 12"
+          />
+        </svg>
+      ) : (
+        <SendIcon className="size-3.5" aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
@@ -62,6 +113,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
+  hasTextualSendableContent,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -70,6 +122,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const pointerFocusProps = preserveComposerFocusOnPointerDown
     ? { onPointerDown: preventPointerFocus }
     : undefined;
+  const sendDisabled =
+    isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent;
+  const activePromptSendDisabled =
+    isSendBusy || isConnecting || isEnvironmentUnavailable || !hasTextualSendableContent;
+  const sendBusy = isConnecting || isSendBusy;
 
   if (pendingAction) {
     return (
@@ -124,17 +181,26 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   if (isRunning) {
     return (
-      <button
-        type="button"
-        className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
-        {...pointerFocusProps}
-        onClick={onInterrupt}
-        aria-label="Stop generation"
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <rect x="2" y="2" width="8" height="8" rx="1.5" />
-        </svg>
-      </button>
+      <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
+        {hasTextualSendableContent ? (
+          <SendButton
+            compact={compact}
+            disabled={activePromptSendDisabled}
+            busy={sendBusy}
+            ariaLabel="Send follow-up"
+            pointerFocusProps={pointerFocusProps}
+          />
+        ) : null}
+        <button
+          type="button"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
+          {...pointerFocusProps}
+          onClick={onInterrupt}
+          aria-label="Stop generation"
+        >
+          <SquareIcon className="size-3 fill-current" aria-hidden="true" />
+        </button>
+      </div>
     );
   }
 
@@ -193,12 +259,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   }
 
   return (
-    <button
-      type="submit"
-      className="flex h-9 w-9 enabled:cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:pointer-events-none disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
-      {...pointerFocusProps}
-      disabled={isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent}
-      aria-label={
+    <SendButton
+      compact={false}
+      disabled={sendDisabled}
+      busy={sendBusy}
+      ariaLabel={
         isEnvironmentUnavailable
           ? "Environment disconnected"
           : isConnecting
@@ -209,37 +274,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 ? "Sending"
                 : "Send message"
       }
-    >
-      {isConnecting || isSendBusy ? (
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="animate-spin"
-          aria-hidden="true"
-        >
-          <circle
-            cx="7"
-            cy="7"
-            r="5.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeDasharray="20 12"
-          />
-        </svg>
-      ) : (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path
-            d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      )}
-    </button>
+      pointerFocusProps={pointerFocusProps}
+    />
   );
 });

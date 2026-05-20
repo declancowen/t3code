@@ -6,6 +6,7 @@ import {
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
+  PaletteIcon,
   Settings2Icon,
 } from "lucide-react";
 import { useCanGoBack, useNavigate } from "@tanstack/react-router";
@@ -17,12 +18,12 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
   useSidebar,
 } from "../ui/sidebar";
 
 export type SettingsSectionPath =
   | "/settings/general"
+  | "/settings/appearance"
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/source-control"
@@ -35,6 +36,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   icon: ComponentType<{ className?: string }>;
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
+  { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
@@ -102,13 +104,12 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarSeparator />
       <SidebarFooter className="p-2">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               size="sm"
-              className="gap-2 px-2 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="gap-2 px-2 py-2 text-xs text-foreground hover:bg-accent"
               onClick={handleBackClick}
             >
               <ArrowLeftIcon className="size-4" />

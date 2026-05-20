@@ -13,6 +13,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -60,6 +61,7 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
     archChoices: ["x64", "arm64"],
   },
 };
+const MACOS_SRGB_PROFILE_PATH = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
 
 interface BuildCliInput {
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
@@ -371,14 +373,14 @@ function generateMacIconSet(
       yield* runCommand(
         ChildProcess.make({
           ...commandOutputOptions(verbose),
-        })`sips -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
+        })`sips -m ${MACOS_SRGB_PROFILE_PATH} -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
       );
 
       const retinaSize = size * 2;
       yield* runCommand(
         ChildProcess.make({
           ...commandOutputOptions(verbose),
-        })`sips -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
+        })`sips -m ${MACOS_SRGB_PROFILE_PATH} -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
       );
     }
 
@@ -410,10 +412,26 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
     yield* runCommand(
       ChildProcess.make({
         ...commandOutputOptions(verbose),
-      })`sips -z 512 512 ${sourcePng} --out ${iconPngPath}`,
+      })`sips -m ${MACOS_SRGB_PROFILE_PATH} -z 512 512 ${sourcePng} --out ${iconPngPath}`,
     );
 
-    yield* generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose);
+    const iconSetExit = yield* Effect.exit(
+      generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose),
+    );
+    if (Exit.isFailure(iconSetExit)) {
+      if (!(yield* fs.exists(iconIcnsPath))) {
+        return yield* new BuildScriptError({
+          message: "Failed to regenerate macOS icon.icns and no prebuilt icon was staged.",
+          cause: iconSetExit.cause,
+        });
+      }
+      yield* Effect.logWarning(
+        "[desktop-artifact] Failed to regenerate macOS icon.icns; using staged prebuilt icon.",
+        {
+          cause: String(iconSetExit.cause),
+        },
+      );
+    }
   });
 }
 

@@ -151,7 +151,6 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
-  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "./ui/sidebar";
@@ -2504,7 +2503,7 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
         <SidebarMenuItem>
           <SidebarMenuButton
             size="sm"
-            className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+            className="gap-2 px-2 py-1.5 text-foreground hover:bg-accent"
             onClick={handleSettingsClick}
           >
             <SettingsIcon className="size-3.5" />
@@ -3458,7 +3457,6 @@ export default function Sidebar() {
             projectsLength={projects.length}
           />
 
-          <SidebarSeparator />
           <SidebarChromeFooter />
         </>
       )}

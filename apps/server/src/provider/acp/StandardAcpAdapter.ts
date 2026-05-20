@@ -74,6 +74,12 @@ export interface StandardAcpAdapterOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  readonly activePromptMessageMethod?: string;
+  readonly sendMessageWhilePromptActive?: (input: {
+    readonly runtime: AcpSessionRuntimeShape;
+    readonly sessionId: string;
+    readonly content: string;
+  }) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
   readonly makeRuntime: (
     input: {
       readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
@@ -98,12 +104,19 @@ interface StandardAcpSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
+  readonly acpSessionId: string;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  activePrompt:
+    | {
+        readonly turnId: TurnId;
+        readonly cancel: Deferred.Deferred<EffectAcpSchema.PromptResponse>;
+      }
+    | undefined;
   stopped: boolean;
 }
 
@@ -224,6 +237,36 @@ function applyRequestedSessionConfiguration(input: {
       ),
     );
   });
+}
+
+function readTextOnlyActivePromptMessage(
+  input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
+  context: {
+    readonly provider: ProviderDriverKind;
+    readonly runtimeLabel: string;
+    readonly method: string;
+  },
+): Effect.Effect<string, ProviderAdapterValidationError | ProviderAdapterRequestError> {
+  const content = input.input?.trim() ?? "";
+  if (!content) {
+    return Effect.fail(
+      new ProviderAdapterValidationError({
+        provider: context.provider,
+        operation: "sendTurn",
+        issue: "Active prompt steering requires non-empty text.",
+      }),
+    );
+  }
+  if (input.attachments && input.attachments.length > 0) {
+    return Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: context.provider,
+        method: context.method,
+        detail: `${context.runtimeLabel} can only steer an active prompt with text. Stop the current turn before sending attachments.`,
+      }),
+    );
+  }
+  return Effect.succeed(content);
 }
 
 function selectAutoApprovedPermissionOption(
@@ -572,12 +615,14 @@ export function makeStandardAcpAdapter(
             session,
             scope: sessionScope,
             acp,
+            acpSessionId: started.sessionId,
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            activePrompt: undefined,
             stopped: false,
           };
 
@@ -680,6 +725,48 @@ export function makeStandardAcpAdapter(
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        const activePrompt = ctx.activePrompt;
+        if (activePrompt && options.sendMessageWhilePromptActive) {
+          const method = options.activePromptMessageMethod ?? "session/message";
+          const content = yield* readTextOnlyActivePromptMessage(input, {
+            provider,
+            runtimeLabel: options.runtimeLabel,
+            method,
+          });
+          yield* options
+            .sendMessageWhilePromptActive({
+              runtime: ctx.acp,
+              sessionId: ctx.acpSessionId,
+              content,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                mapAcpToAdapterError(provider, input.threadId, method, error),
+              ),
+            );
+
+          ctx.session = {
+            ...ctx.session,
+            activeTurnId: activePrompt.turnId,
+            updatedAt: yield* nowIso,
+          };
+
+          yield* offerRuntimeEvent({
+            type: "turn.started",
+            ...(yield* makeEventStamp()),
+            provider,
+            threadId: input.threadId,
+            turnId: activePrompt.turnId,
+            payload: {},
+          });
+
+          return {
+            threadId: input.threadId,
+            turnId: activePrompt.turnId,
+            resumeCursor: ctx.session.resumeCursor,
+          };
+        }
+
         const turnId = TurnId.make(crypto.randomUUID());
         const turnModel =
           input.modelSelection?.instanceId === boundInstanceId
@@ -693,22 +780,6 @@ export function makeStandardAcpAdapter(
           model,
           mapError: ({ cause, method }) =>
             mapAcpToAdapterError(provider, input.threadId, method, cause),
-        });
-        ctx.activeTurnId = turnId;
-        ctx.lastPlanFingerprint = undefined;
-        ctx.session = {
-          ...ctx.session,
-          activeTurnId: turnId,
-          updatedAt: yield* nowIso,
-        };
-
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider,
-          threadId: input.threadId,
-          turnId,
-          payload: model ? { model } : {},
         });
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
@@ -755,13 +826,40 @@ export function makeStandardAcpAdapter(
           });
         }
 
+        const activePromptCancel = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+        ctx.activePrompt = { turnId, cancel: activePromptCancel };
+        ctx.activeTurnId = turnId;
+        ctx.lastPlanFingerprint = undefined;
+        ctx.session = {
+          ...ctx.session,
+          activeTurnId: turnId,
+          updatedAt: yield* nowIso,
+        };
+
+        yield* offerRuntimeEvent({
+          type: "turn.started",
+          ...(yield* makeEventStamp()),
+          provider,
+          threadId: input.threadId,
+          turnId,
+          payload: model ? { model } : {},
+        });
+
         const result = yield* ctx.acp
           .prompt({
             prompt: promptParts,
           })
           .pipe(
+            Effect.raceFirst(Deferred.await(activePromptCancel)),
             Effect.mapError((error) =>
               mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (ctx.activePrompt?.turnId === turnId) {
+                  ctx.activePrompt = undefined;
+                }
+              }),
             ),
           );
 
@@ -797,6 +895,11 @@ export function makeStandardAcpAdapter(
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        if (ctx.activePrompt) {
+          yield* Deferred.succeed(ctx.activePrompt.cancel, {
+            stopReason: "cancelled",
+          });
+        }
         yield* Effect.ignore(
           ctx.acp.cancel.pipe(
             Effect.mapError((error) =>

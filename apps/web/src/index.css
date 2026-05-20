@@ -6,6 +6,8 @@
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -29,6 +31,14 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
   --radius-sm: calc(var(--radius) - 4px);
@@ -85,6 +95,10 @@
 
 :root {
   color-scheme: light;
+  --app-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --app-font-mono: "SF Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, monospace;
+  --chat-font-family: var(--app-font-sans);
+  --chat-font-size: 14px;
   --radius: 0.625rem;
   --background: var(--color-white);
   --app-chrome-background: var(--background);
@@ -93,7 +107,7 @@
   --card-foreground: var(--color-neutral-800);
   --popover: var(--color-white);
   --popover-foreground: var(--color-neutral-800);
-  --primary: oklch(0.488 0.217 264);
+  --primary: #ff5c5c;
   --primary-foreground: var(--color-white);
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--color-neutral-800);
@@ -101,10 +115,20 @@
   --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--color-neutral-800);
+  /* Sidebar reads as a distinct surface from --background. In light mode that
+     means a subtle neutral grey panel sitting on a white workspace. */
+  --sidebar: color-mix(in srgb, var(--color-white) 95%, var(--color-black));
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: --alpha(var(--color-black) / 5%);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: --alpha(var(--color-black) / 10%);
+  --sidebar-ring: var(--ring);
   --destructive: var(--color-red-500);
   --border: --alpha(var(--color-black) / 8%);
   --input: --alpha(var(--color-black) / 10%);
-  --ring: oklch(0.488 0.217 264);
+  --ring: #ff5c5c;
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -115,25 +139,35 @@
 
   @variant dark {
     color-scheme: dark;
-    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
+    --background: #101827;
     --app-chrome-background: var(--background);
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: oklch(0.588 0.217 264);
+    --foreground: #e4e4e7;
+    /* Elevated surfaces (cards, popovers, and the chat composer which uses
+       --card) sit above --background. */
+    --card: #181e2b;
+    --card-foreground: #e4e4e7;
+    --popover: #181e2b;
+    --popover-foreground: #e4e4e7;
+    --primary: #ff5c5c;
     --primary-foreground: var(--color-white);
     --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
+    --secondary-foreground: #e4e4e7;
     --muted: --alpha(var(--color-white) / 4%);
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
+    --accent-foreground: #e4e4e7;
+    --sidebar: #181e2b;
+    --sidebar-foreground: #d9dde6;
+    --sidebar-primary: #ff5c5c;
+    --sidebar-primary-foreground: var(--color-white);
+    --sidebar-accent: rgba(255, 255, 255, 0.08);
+    --sidebar-accent-foreground: #f4f4f5;
+    --sidebar-border: rgba(255, 255, 255, 0.12);
+    --sidebar-ring: #ff5c5c;
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --border: --alpha(var(--color-white) / 6%);
     --input: --alpha(var(--color-white) / 8%);
-    --ring: oklch(0.588 0.217 264);
+    --ring: #ff5c5c;
     --destructive-foreground: var(--color-red-400);
     --info: var(--color-blue-500);
     --info-foreground: var(--color-blue-400);
@@ -145,13 +179,7 @@
 }
 
 body {
-  font-family:
-    "DM Sans",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--app-font-sans);
   margin: 0;
   padding: 0;
 }
@@ -191,7 +219,79 @@ body::after {
 
 pre,
 code {
-  font-family: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--app-font-mono);
+}
+
+html[data-font-smoothing="true"] body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-font-smoothing="false"] body {
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+html[data-use-pointer-cursors="true"]
+  :where(
+    button:not(:disabled),
+    a[href],
+    input[type="button"]:not(:disabled),
+    input[type="checkbox"]:not(:disabled),
+    input[type="color"]:not(:disabled),
+    input[type="range"]:not(:disabled),
+    input[type="radio"]:not(:disabled),
+    input[type="submit"]:not(:disabled),
+    select:not(:disabled),
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [data-slot="select-trigger"]:not([data-disabled])
+  ) {
+  cursor: pointer;
+}
+
+html[data-use-pointer-cursors="false"]
+  :where(
+    button:not(:disabled),
+    a[href],
+    input[type="button"]:not(:disabled),
+    input[type="checkbox"]:not(:disabled),
+    input[type="color"]:not(:disabled),
+    input[type="range"]:not(:disabled),
+    input[type="radio"]:not(:disabled),
+    input[type="submit"]:not(:disabled),
+    select:not(:disabled),
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [data-slot="select-trigger"]:not([data-disabled])
+  ) {
+  cursor: default !important;
+}
+
+html[data-translucent-sidebar="true"] [data-slot="sidebar-inner"] {
+  background-color: color-mix(in srgb, var(--sidebar) 78%, transparent);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+html[data-reduce-motion="on"] *,
+html[data-reduce-motion="on"] *::before,
+html[data-reduce-motion="on"] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: 0.001ms !important;
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-reduce-motion="system"] *,
+  html[data-reduce-motion="system"] *::before,
+  html[data-reduce-motion="system"] *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 /* Window drag region (frameless titlebar) */
@@ -271,6 +371,12 @@ label:has(> select#reasoning-effort) select {
 }
 
 /* Chat markdown rendering */
+.chat-typography {
+  font-family: var(--chat-font-family);
+  font-size: var(--chat-font-size);
+  line-height: 1.625;
+}
+
 .chat-markdown {
   min-width: 0;
   overflow-wrap: anywhere;

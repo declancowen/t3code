@@ -13,6 +13,40 @@ export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"])
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
+export const AppearanceTheme = Schema.Literal("lobster");
+export type AppearanceTheme = typeof AppearanceTheme.Type;
+export const DEFAULT_APPEARANCE_THEME: AppearanceTheme = "lobster";
+
+export const AppearanceChatFontFamily = Schema.Literal("satoshi");
+export type AppearanceChatFontFamily = typeof AppearanceChatFontFamily.Type;
+export const DEFAULT_APPEARANCE_CHAT_FONT_FAMILY: AppearanceChatFontFamily = "satoshi";
+
+export const MIN_APPEARANCE_CHAT_FONT_SIZE = 12;
+export const MAX_APPEARANCE_CHAT_FONT_SIZE = 20;
+export const DEFAULT_APPEARANCE_CHAT_FONT_SIZE = 14;
+export const AppearanceChatFontSize = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_CHAT_FONT_SIZE,
+    maximum: MAX_APPEARANCE_CHAT_FONT_SIZE,
+  }),
+);
+export type AppearanceChatFontSize = typeof AppearanceChatFontSize.Type;
+
+export const MIN_APPEARANCE_CONTRAST = 0;
+export const MAX_APPEARANCE_CONTRAST = 100;
+export const DEFAULT_APPEARANCE_CONTRAST = 50;
+export const AppearanceContrast = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_CONTRAST,
+    maximum: MAX_APPEARANCE_CONTRAST,
+  }),
+);
+export type AppearanceContrast = typeof AppearanceContrast.Type;
+
+export const AppearanceReduceMotion = Schema.Literals(["system", "on", "off"]);
+export type AppearanceReduceMotion = typeof AppearanceReduceMotion.Type;
+export const DEFAULT_APPEARANCE_REDUCE_MOTION: AppearanceReduceMotion = "system";
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "updated_at";
@@ -40,6 +74,28 @@ export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
 export const ClientSettingsSchema = Schema.Struct({
+  appearanceChatFontFamily: AppearanceChatFontFamily.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CHAT_FONT_FAMILY)),
+  ),
+  appearanceChatFontSize: AppearanceChatFontSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CHAT_FONT_SIZE)),
+  ),
+  appearanceContrast: AppearanceContrast.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
+  ),
+  appearanceFontSmoothing: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  appearanceReduceMotion: AppearanceReduceMotion.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_REDUCE_MOTION)),
+  ),
+  appearanceTheme: AppearanceTheme.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_THEME)),
+  ),
+  appearanceTranslucentSidebar: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  appearanceUsePointerCursors: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -531,6 +587,14 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  appearanceChatFontFamily: Schema.optionalKey(AppearanceChatFontFamily),
+  appearanceChatFontSize: Schema.optionalKey(AppearanceChatFontSize),
+  appearanceContrast: Schema.optionalKey(AppearanceContrast),
+  appearanceFontSmoothing: Schema.optionalKey(Schema.Boolean),
+  appearanceReduceMotion: Schema.optionalKey(AppearanceReduceMotion),
+  appearanceTheme: Schema.optionalKey(AppearanceTheme),
+  appearanceTranslucentSidebar: Schema.optionalKey(Schema.Boolean),
+  appearanceUsePointerCursors: Schema.optionalKey(Schema.Boolean),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

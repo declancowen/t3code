@@ -25,4 +25,21 @@ describe("AcpAdapterSupport", () => {
     expect(error._tag).toBe("ProviderAdapterRequestError");
     expect(error.message).toContain("Invalid params");
   });
+
+  it("surfaces ACP request error data when the provider reports a generic internal error", () => {
+    const error = mapAcpToAdapterError(
+      ProviderDriverKind.make("kiro"),
+      "thread-1" as never,
+      "session/prompt",
+      new EffectAcpErrors.AcpRequestError({
+        code: -32603,
+        errorMessage: "Internal error",
+        data: "Prompt already in progress",
+      }),
+    );
+
+    expect(error._tag).toBe("ProviderAdapterRequestError");
+    expect(error.message).toContain("Prompt already in progress");
+    expect(error.message).not.toContain("Internal error");
+  });
 });

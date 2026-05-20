@@ -78,21 +78,6 @@ import {
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 
-const THEME_OPTIONS = [
-  {
-    value: "system",
-    label: "System",
-  },
-  {
-    value: "light",
-    label: "Light",
-  },
-  {
-    value: "dark",
-    label: "Dark",
-  },
-] as const;
-
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
@@ -390,6 +375,32 @@ export function useSettingsRestore(onRestored?: () => void) {
   const changedSettingLabels = useMemo(
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
+      ...(settings.appearanceTheme !== DEFAULT_UNIFIED_SETTINGS.appearanceTheme
+        ? ["Color theme"]
+        : []),
+      ...(settings.appearanceChatFontFamily !== DEFAULT_UNIFIED_SETTINGS.appearanceChatFontFamily
+        ? ["Chat font"]
+        : []),
+      ...(settings.appearanceChatFontSize !== DEFAULT_UNIFIED_SETTINGS.appearanceChatFontSize
+        ? ["Chat font size"]
+        : []),
+      ...(settings.appearanceTranslucentSidebar !==
+      DEFAULT_UNIFIED_SETTINGS.appearanceTranslucentSidebar
+        ? ["Translucent sidebar"]
+        : []),
+      ...(settings.appearanceContrast !== DEFAULT_UNIFIED_SETTINGS.appearanceContrast
+        ? ["Contrast"]
+        : []),
+      ...(settings.appearanceUsePointerCursors !==
+      DEFAULT_UNIFIED_SETTINGS.appearanceUsePointerCursors
+        ? ["Pointer cursors"]
+        : []),
+      ...(settings.appearanceReduceMotion !== DEFAULT_UNIFIED_SETTINGS.appearanceReduceMotion
+        ? ["Reduce motion"]
+        : []),
+      ...(settings.appearanceFontSmoothing !== DEFAULT_UNIFIED_SETTINGS.appearanceFontSmoothing
+        ? ["Font smoothing"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -428,6 +439,14 @@ export function useSettingsRestore(onRestored?: () => void) {
     ],
     [
       isGitWritingModelDirty,
+      settings.appearanceChatFontFamily,
+      settings.appearanceChatFontSize,
+      settings.appearanceContrast,
+      settings.appearanceFontSmoothing,
+      settings.appearanceReduceMotion,
+      settings.appearanceTheme,
+      settings.appearanceTranslucentSidebar,
+      settings.appearanceUsePointerCursors,
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
@@ -455,6 +474,14 @@ export function useSettingsRestore(onRestored?: () => void) {
 
     setTheme("system");
     updateSettings({
+      appearanceTheme: DEFAULT_UNIFIED_SETTINGS.appearanceTheme,
+      appearanceChatFontFamily: DEFAULT_UNIFIED_SETTINGS.appearanceChatFontFamily,
+      appearanceChatFontSize: DEFAULT_UNIFIED_SETTINGS.appearanceChatFontSize,
+      appearanceTranslucentSidebar: DEFAULT_UNIFIED_SETTINGS.appearanceTranslucentSidebar,
+      appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
+      appearanceUsePointerCursors: DEFAULT_UNIFIED_SETTINGS.appearanceUsePointerCursors,
+      appearanceReduceMotion: DEFAULT_UNIFIED_SETTINGS.appearanceReduceMotion,
+      appearanceFontSmoothing: DEFAULT_UNIFIED_SETTINGS.appearanceFontSmoothing,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
@@ -478,7 +505,6 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
-  const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const observability = useServerObservability();
@@ -517,39 +543,6 @@ export function GeneralSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
-        <SettingsRow
-          title="Theme"
-          description="Choose how T3 Code looks across the app."
-          resetAction={
-            theme !== "system" ? (
-              <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-            ) : null
-          }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
         <SettingsRow
           title="Time format"
           description="System default follows your browser or OS clock preference."
