@@ -358,7 +358,7 @@ export interface ChatComposerHandle {
   /** Insert a terminal context from the terminal drawer. */
   addTerminalContext: (selection: TerminalContextSelection) => void;
   /** Get the current prompt/effort/model state for use in send. */
-  getSendContext: () => {
+  getSendContext: (options?: { syncPrompt?: boolean }) => {
     prompt: string;
     images: ComposerImageAttachment[];
     terminalContexts: TerminalContextDraft[];
@@ -1463,6 +1463,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     };
   }, [composerCursor, composerTerminalContexts, promptRef]);
 
+  const syncComposerSnapshotToDraft = useCallback(() => {
+    const snapshot = readComposerSnapshot();
+    promptRef.current = snapshot.value;
+    if (snapshot.value !== prompt) {
+      setPrompt(snapshot.value);
+    }
+    setComposerCursor(snapshot.cursor);
+    setComposerTrigger(detectComposerTrigger(snapshot.value, snapshot.expandedCursor));
+    return snapshot;
+  }, [prompt, promptRef, readComposerSnapshot, setPrompt]);
+
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
     trigger: ComposerTrigger | null;
@@ -1854,9 +1865,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setIsComposerModelPickerOpen((open) => !open);
       },
       isModelPickerOpen: () => isComposerModelPickerOpen,
-      readSnapshot: () => {
-        return readComposerSnapshot();
-      },
+      readSnapshot: readComposerSnapshot,
       resetCursorState: (options?: {
         cursor?: number;
         prompt?: string;
@@ -1910,17 +1919,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAt(nextCollapsedCursor);
         });
       },
-      getSendContext: () => ({
-        prompt: promptRef.current,
-        images: composerImagesRef.current,
-        terminalContexts: composerTerminalContextsRef.current,
-        selectedPromptEffort,
-        selectedModelOptionsForDispatch,
-        selectedModelSelection,
-        selectedProvider,
-        selectedModel,
-        selectedProviderModels,
-      }),
+      getSendContext: (options?: { syncPrompt?: boolean }) => {
+        const snapshot =
+          options?.syncPrompt === false
+            ? { value: promptRef.current }
+            : syncComposerSnapshotToDraft();
+        return {
+          prompt: snapshot.value,
+          images: composerImagesRef.current,
+          terminalContexts: composerTerminalContextsRef.current,
+          selectedPromptEffort,
+          selectedModelOptionsForDispatch,
+          selectedModelSelection,
+          selectedProvider,
+          selectedModel,
+          selectedProviderModels,
+        };
+      },
     }),
     [
       activeThread,
@@ -1939,6 +1954,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
+      syncComposerSnapshotToDraft,
     ],
   );
 
