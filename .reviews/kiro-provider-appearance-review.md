@@ -29,11 +29,62 @@
 | Field                 | Value                |
 | --------------------- | -------------------- |
 | **Review started**    | 2026-05-20           |
-| **Last reviewed**     | 2026-05-20 22:17 BST |
-| **Total turns**       | 2                    |
+| **Last reviewed**     | 2026-05-21 04:43 BST |
+| **Total turns**       | 3                    |
 | **Open findings**     | 0                    |
 | **Resolved findings** | 5                    |
 | **Accepted findings** | 0                    |
+
+## Turn 3 — 2026-05-21 04:43 BST
+
+| Field           | Value        |
+| --------------- | ------------ |
+| **Commit**      | working tree |
+| **IDE / Agent** | Codex        |
+
+**Summary:** Re-reviewed after live Kiro logs showed `Prompt already in progress` from a second full `session/prompt` and later output being attributed to the failed overlap turn.
+**Outcome:** All clear for the local fix.
+**Risk score:** Medium — this is shared ACP prompt lifecycle state, but the patch is contained to the standard ACP adapter and regression coverage targets the observed failure mode.
+**Change archetypes:** async lifecycle, provider adapter contract, state reconciliation.
+**Intended change:** Keep running Kiro output attached to the real active provider turn, route active follow-ups through the active-prompt hook when any local session state still marks a turn active, and clear stale active-turn state after normal completion.
+**Intent vs actual:** The diff matches the intent. Completed prompts now remove `session.activeTurnId`; failed overlapping prompts restore the previous active prompt/session marker instead of leaving the failed overlap as active; active-hook routing also checks the session snapshot active marker.
+**Confidence:** High for adapter state behavior; medium for live Kiro extension behavior until restarted and smoked against the real CLI.
+**Coverage note:** Added regression coverage for post-completion active state clearing and overlap-failure active state restoration.
+**Finding triage:** No new blocking findings found.
+**Architecture impact:** The prompt lifecycle invariant stays owned by `StandardAcpAdapter`; provider-specific Kiro steering remains isolated in `KiroAdapter`.
+**Bug classes / invariants checked:** stale active-turn marker; overlapping prompt failure rollback; duplicate `session/prompt` prevention fallback; ACP cancel path remains wired through `thread.turn.interrupt` -> provider interrupt -> `session/cancel`.
+**Branch totality:** Rechecked the current local diff plus adjacent interrupt paths in `ChatView`, `ProviderCommandReactor`, `ProviderService`, `StandardAcpAdapter`, and effect-acp cancel transport tests.
+**Sibling closure:** Cursor/Codex/Claude/OpenCode use separate adapter paths for turn execution; Kiro remains the standard ACP adapter consumer for this active-hook flow.
+**Residual risk / unknowns:** Typing `stop` into the composer is a normal message, not a cancel command. The square Stop control is the cancel path and should produce `session/cancel` in provider logs after restart.
+
+### Validation
+
+- `node node_modules/vitest/vitest.mjs run apps/server/src/provider/acp/StandardAcpAdapter.test.ts` — passed, 6 tests.
+- `bun fmt` — passed.
+- `bun lint` — passed with 9 existing warnings.
+- `bun typecheck` — passed with Bun directory added to `PATH` for Turbo package-manager resolution.
+- `git diff --check` — passed.
+
+### Branch-totality proof
+
+- **Non-delta files/systems re-read:** `ProviderCommandReactor` interrupt dispatch, `ProviderService.interruptTurn`, `ChatView.onInterrupt`, Kiro adapter active hook, effect-acp `session/cancel` transport tests.
+- **Prior open findings rechecked:** Active steering attachments remain covered; ACP cancellation remains covered by existing adapter and orchestration tests.
+- **Prior resolved/adjacent areas revalidated:** The new regression covers the remaining state reconciliation hole found in live logs.
+- **Hotspots or sibling paths revisited:** Active prompt lifecycle state, provider session snapshot state, and cancel/interrupt routing.
+- **Why this is enough:** The observed live failure was incorrect adapter state around overlapping prompts; the new test reproduces that class directly and the required repo checks pass.
+
+### Challenger pass
+
+Done — the most likely missed issue was that cancelling via the UI Stop button might still not call the provider. Existing code/test coverage confirms the UI command reaches `providerService.interruptTurn`, and the standard ACP adapter always forwards `session/cancel`, including when no local active prompt is registered.
+
+### Resolved / Carried / New findings
+
+No new findings.
+
+### Recommendations
+
+1. **Fix first:** none.
+2. **Then address:** restart backend/web and confirm the next live Kiro run shows `_message/send` for steering and `session/cancel` when pressing the square Stop control.
 
 ## Turn 2 — 2026-05-20 22:17 BST
 

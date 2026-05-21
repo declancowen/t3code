@@ -2,11 +2,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import { AcpRequestError } from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { type ChatAttachment, ProviderDriverKind, ThreadId } from "@t3tools/contracts";
@@ -21,8 +23,8 @@ const standardAcpAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
 
 function makeFakeAcpRuntime(input: {
   readonly cancelCalled: Deferred.Deferred<void>;
-  readonly prompt?: () => Effect.Effect<EffectAcpSchema.PromptResponse>;
-  readonly request?: (method: string, payload: unknown) => Effect.Effect<unknown>;
+  readonly prompt?: () => Effect.Effect<EffectAcpSchema.PromptResponse, unknown>;
+  readonly request?: (method: string, payload: unknown) => Effect.Effect<unknown, unknown>;
 }): AcpSessionRuntimeShape {
   const ignoreHandler = () => Effect.void;
   return {
@@ -377,6 +379,8 @@ it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
       input: "first prompt",
       attachments: [],
     });
+    const sessionsAfterFirst = yield* adapter.listSessions();
+    assert.isUndefined(sessionsAfterFirst[0]?.activeTurnId);
     yield* adapter.sendTurn({
       threadId,
       input: "second prompt",
@@ -385,6 +389,77 @@ it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
 
     assert.equal(promptCallCount, 2);
     assert.deepEqual(requests, []);
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("restores the previous active ACP turn after an overlapping prompt fails", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("cursor");
+    const threadId = ThreadId.make("standard-acp-overlap-failure-restores-active-turn");
+    const promptStarted = yield* Deferred.make<void>();
+    const promptResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+    const cancelCalled = yield* Deferred.make<void>();
+    let promptCallCount = 0;
+    const runtime = makeFakeAcpRuntime({
+      cancelCalled,
+      prompt: () =>
+        Effect.sync(() => {
+          promptCallCount += 1;
+          return promptCallCount;
+        }).pipe(
+          Effect.flatMap((callCount) =>
+            callCount === 1
+              ? Deferred.succeed(promptStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(promptResponse)),
+                )
+              : Effect.fail(
+                  AcpRequestError.internalError("Internal error", "Prompt already in progress"),
+                ),
+          ),
+        ),
+    });
+
+    const adapter = yield* makeStandardAcpAdapter({
+      provider,
+      runtimeLabel: "Fake ACP",
+      makeRuntime: () => Effect.succeed(runtime),
+    });
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+
+    const sendTurnFiber = yield* adapter
+      .sendTurn({
+        threadId,
+        input: "start a long prompt",
+        attachments: [],
+      })
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(promptStarted).pipe(Effect.timeout("1 second"));
+    const sessionsWhileFirstPromptRuns = yield* adapter.listSessions();
+    const firstActiveTurnId = sessionsWhileFirstPromptRuns[0]?.activeTurnId;
+    assert.isDefined(firstActiveTurnId);
+
+    const secondExit = yield* adapter
+      .sendTurn({
+        threadId,
+        input: "overlapping prompt",
+        attachments: [],
+      })
+      .pipe(Effect.exit, Effect.timeout("1 second"));
+
+    assert.isTrue(Exit.isFailure(secondExit));
+    const sessionsAfterOverlapFailure = yield* adapter.listSessions();
+    assert.equal(sessionsAfterOverlapFailure[0]?.activeTurnId, firstActiveTurnId);
+
+    yield* Deferred.succeed(promptResponse, { stopReason: "end_turn" });
+    yield* Fiber.join(sendTurnFiber);
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );

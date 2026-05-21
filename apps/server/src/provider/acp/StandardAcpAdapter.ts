@@ -747,7 +747,8 @@ export function makeStandardAcpAdapter(
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        const activePromptTurnId = ctx.activePrompt?.turnId ?? ctx.activeTurnId;
+        const activePromptTurnId =
+          ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
         if (activePromptTurnId && options.sendMessageWhilePromptActive) {
           const method = options.activePromptMessageMethod ?? "session/message";
           const contentBlocks = yield* buildPromptContentBlocks(input, method);
@@ -813,6 +814,9 @@ export function makeStandardAcpAdapter(
 
         const promptParts = yield* buildPromptContentBlocks(input, "session/prompt");
 
+        const previousActivePrompt = ctx.activePrompt;
+        const previousActiveTurnId = ctx.activeTurnId;
+        const previousSessionActiveTurnId = ctx.session.activeTurnId;
         ctx.activePrompt = { turnId };
         ctx.activeTurnId = turnId;
         ctx.lastPlanFingerprint = undefined;
@@ -842,22 +846,32 @@ export function makeStandardAcpAdapter(
             Effect.ensuring(
               Effect.sync(() => {
                 if (ctx.activePrompt?.turnId === turnId) {
-                  ctx.activePrompt = undefined;
+                  ctx.activePrompt = previousActivePrompt;
                 }
                 if (ctx.activeTurnId === turnId) {
-                  ctx.activeTurnId = undefined;
+                  ctx.activeTurnId = previousActiveTurnId;
+                }
+                if (ctx.session.activeTurnId === turnId) {
+                  const nextSession = { ...ctx.session };
+                  if (previousSessionActiveTurnId !== undefined) {
+                    nextSession.activeTurnId = previousSessionActiveTurnId;
+                  } else {
+                    delete nextSession.activeTurnId;
+                  }
+                  ctx.session = nextSession;
                 }
               }),
             ),
           );
 
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
-        ctx.session = {
+        const nextSession = {
           ...ctx.session,
-          activeTurnId: turnId,
           updatedAt: yield* nowIso,
           ...(model ? { model } : {}),
         };
+        delete nextSession.activeTurnId;
+        ctx.session = nextSession;
 
         yield* offerRuntimeEvent({
           type: "turn.completed",
