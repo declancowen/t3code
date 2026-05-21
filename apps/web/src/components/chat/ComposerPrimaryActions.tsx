@@ -23,7 +23,6 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
-  hasTextualSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -96,7 +95,7 @@ function SendButton({
           />
         </svg>
       ) : (
-        <SendIcon className="size-3.5" aria-hidden="true" />
+        <SendIcon className="size-3.5 translate-x-[1.5px] translate-y-px" aria-hidden="true" />
       )}
     </button>
   );
@@ -113,7 +112,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
-  hasTextualSendableContent,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -124,8 +122,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     : undefined;
   const sendDisabled =
     isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent;
-  const activePromptSendDisabled =
-    isSendBusy || isConnecting || isEnvironmentUnavailable || !hasTextualSendableContent;
   const sendBusy = isConnecting || isSendBusy;
 
   if (pendingAction) {
@@ -181,19 +177,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   if (isRunning) {
     return (
-      <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {hasTextualSendableContent ? (
-          <SendButton
-            compact={compact}
-            disabled={activePromptSendDisabled}
-            busy={sendBusy}
-            ariaLabel="Send follow-up"
-            pointerFocusProps={pointerFocusProps}
-          />
-        ) : null}
+      <div className="flex items-center justify-end">
         <button
           type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 sm:h-8 sm:w-8"
           {...pointerFocusProps}
           onClick={onInterrupt}
           aria-label="Stop generation"
