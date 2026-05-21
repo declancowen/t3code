@@ -14,6 +14,36 @@ import {
 const isAcpProcessExitedError = Schema.is(EffectAcpErrors.AcpProcessExitedError);
 const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 
+function readAcpErrorDataMessage(data: unknown): string | undefined {
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (data && typeof data === "object") {
+    const maybeRecord = data as Record<string, unknown>;
+    for (const key of ["message", "detail", "error"]) {
+      const value = maybeRecord[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function formatAcpRequestErrorDetail(error: EffectAcpErrors.AcpRequestError): string {
+  const dataMessage = readAcpErrorDataMessage(error.data);
+  if (!dataMessage) {
+    return error.message;
+  }
+  return error.message === "Internal error" ? dataMessage : `${error.message}: ${dataMessage}`;
+}
+
 export function mapAcpToAdapterError(
   provider: ProviderDriverKind,
   threadId: ThreadId,
@@ -31,7 +61,7 @@ export function mapAcpToAdapterError(
     return new ProviderAdapterRequestError({
       provider,
       method,
-      detail: error.message,
+      detail: formatAcpRequestErrorDetail(error),
       cause: error,
     });
   }

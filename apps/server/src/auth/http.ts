@@ -14,10 +14,14 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { AuthError, ServerAuth } from "./Services/ServerAuth.ts";
 import { SessionCredentialService } from "./Services/SessionCredentialService.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
-import { browserApiCorsHeaders } from "../httpCors.ts";
+import { browserApiCorsHeadersForOrigin } from "../httpCors.ts";
+
+const authCorsHeadersForRequest = (request: HttpServerRequest.HttpServerRequest) =>
+  browserApiCorsHeadersForOrigin(request.headers.origin);
 
 export const respondToAuthError = (error: AuthError) =>
   Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
     if ((error.status ?? 500) >= 500) {
       yield* Effect.logError("auth route failed", {
         message: error.message,
@@ -28,7 +32,7 @@ export const respondToAuthError = (error: AuthError) =>
       {
         error: error.message,
       },
-      { status: error.status ?? 500, headers: browserApiCorsHeaders },
+      { status: error.status ?? 500, headers: authCorsHeadersForRequest(request) },
     );
   });
 
@@ -41,7 +45,7 @@ export const authSessionRouteLayer = HttpRouter.add(
     const session = yield* serverAuth.getSessionState(request);
     return HttpServerResponse.jsonUnsafe(session, {
       status: 200,
-      headers: browserApiCorsHeaders,
+      headers: authCorsHeadersForRequest(request),
     });
   }),
 );
@@ -87,7 +91,7 @@ export const authBootstrapRouteLayer = HttpRouter.add(
 
     return yield* HttpServerResponse.jsonUnsafe(result.response, {
       status: 200,
-      headers: browserApiCorsHeaders,
+      headers: authCorsHeadersForRequest(request),
     }).pipe(
       HttpServerResponse.setCookie(sessions.cookieName, result.sessionToken, {
         expires: DateTime.toDate(result.response.expiresAt),
@@ -121,7 +125,7 @@ export const authBearerBootstrapRouteLayer = HttpRouter.add(
     );
     return HttpServerResponse.jsonUnsafe(result satisfies AuthBearerBootstrapResult, {
       status: 200,
-      headers: browserApiCorsHeaders,
+      headers: authCorsHeadersForRequest(request),
     });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
@@ -136,7 +140,7 @@ export const authWebSocketTokenRouteLayer = HttpRouter.add(
     const result = yield* serverAuth.issueWebSocketToken(session);
     return HttpServerResponse.jsonUnsafe(result satisfies AuthWebSocketTokenResult, {
       status: 200,
-      headers: browserApiCorsHeaders,
+      headers: authCorsHeadersForRequest(request),
     });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
@@ -177,7 +181,10 @@ export const authPairingCredentialRouteLayer = HttpRouter.add(
         )
       : {};
     const result = yield* serverAuth.issuePairingCredential(payload);
-    return HttpServerResponse.jsonUnsafe(result, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(result, {
+      status: 200,
+      headers: authCorsHeadersForRequest(request),
+    });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
@@ -191,16 +198,19 @@ const authenticateOwnerSession = Effect.gen(function* () {
       status: 403,
     });
   }
-  return { serverAuth, session } as const;
+  return { request, serverAuth, session } as const;
 });
 
 export const authPairingLinksRouteLayer = HttpRouter.add(
   "GET",
   "/api/auth/pairing-links",
   Effect.gen(function* () {
-    const { serverAuth } = yield* authenticateOwnerSession;
+    const { request, serverAuth } = yield* authenticateOwnerSession;
     const pairingLinks = yield* serverAuth.listPairingLinks();
-    return HttpServerResponse.jsonUnsafe(pairingLinks, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(pairingLinks, {
+      status: 200,
+      headers: authCorsHeadersForRequest(request),
+    });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
@@ -208,7 +218,7 @@ export const authPairingLinksRevokeRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/pairing-links/revoke",
   Effect.gen(function* () {
-    const { serverAuth } = yield* authenticateOwnerSession;
+    const { request, serverAuth } = yield* authenticateOwnerSession;
     const payload = yield* HttpServerRequest.schemaBodyJson(AuthRevokePairingLinkInput).pipe(
       Effect.mapError(
         (cause) =>
@@ -220,7 +230,13 @@ export const authPairingLinksRevokeRouteLayer = HttpRouter.add(
       ),
     );
     const revoked = yield* serverAuth.revokePairingLink(payload.id);
-    return HttpServerResponse.jsonUnsafe({ revoked }, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(
+      { revoked },
+      {
+        status: 200,
+        headers: authCorsHeadersForRequest(request),
+      },
+    );
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
@@ -228,9 +244,12 @@ export const authClientsRouteLayer = HttpRouter.add(
   "GET",
   "/api/auth/clients",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { request, serverAuth, session } = yield* authenticateOwnerSession;
     const clients = yield* serverAuth.listClientSessions(session.sessionId);
-    return HttpServerResponse.jsonUnsafe(clients, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(clients, {
+      status: 200,
+      headers: authCorsHeadersForRequest(request),
+    });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
@@ -238,7 +257,7 @@ export const authClientsRevokeRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/clients/revoke",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { request, serverAuth, session } = yield* authenticateOwnerSession;
     const payload = yield* HttpServerRequest.schemaBodyJson(AuthRevokeClientSessionInput).pipe(
       Effect.mapError(
         (cause) =>
@@ -250,7 +269,13 @@ export const authClientsRevokeRouteLayer = HttpRouter.add(
       ),
     );
     const revoked = yield* serverAuth.revokeClientSession(session.sessionId, payload.sessionId);
-    return HttpServerResponse.jsonUnsafe({ revoked }, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(
+      { revoked },
+      {
+        status: 200,
+        headers: authCorsHeadersForRequest(request),
+      },
+    );
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
@@ -258,8 +283,14 @@ export const authClientsRevokeOthersRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/clients/revoke-others",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { request, serverAuth, session } = yield* authenticateOwnerSession;
     const revokedCount = yield* serverAuth.revokeOtherClientSessions(session.sessionId);
-    return HttpServerResponse.jsonUnsafe({ revokedCount }, { status: 200 });
+    return HttpServerResponse.jsonUnsafe(
+      { revokedCount },
+      {
+        status: 200,
+        headers: authCorsHeadersForRequest(request),
+      },
+    );
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );

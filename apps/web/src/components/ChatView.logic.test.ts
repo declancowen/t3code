@@ -48,6 +48,7 @@ describe("deriveComposerSendState", () => {
     expect(state.sendableTerminalContexts).toEqual([]);
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(false);
+    expect(state.hasTextualSendableContent).toBe(false);
   });
 
   it("keeps text sendable while excluding expired terminal pills", () => {
@@ -71,6 +72,18 @@ describe("deriveComposerSendState", () => {
     expect(state.trimmedPrompt).toBe("yoo  waddup");
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
+    expect(state.hasTextualSendableContent).toBe(true);
+  });
+
+  it("tracks image-only drafts as sendable but not active-prompt steerable", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 1,
+      terminalContexts: [],
+    });
+
+    expect(state.hasSendableContent).toBe(true);
+    expect(state.hasTextualSendableContent).toBe(false);
   });
 });
 
@@ -633,6 +646,58 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(false);
+  });
+
+  it("clears local dispatch when an active turn accepts an additional running prompt", () => {
+    const activeLatestTurn = {
+      ...previousLatestTurn,
+      state: "running" as const,
+      completedAt: null,
+    };
+    const activeSession = {
+      ...previousSession,
+      status: "running" as const,
+      orchestrationStatus: "running" as const,
+      activeTurnId: previousLatestTurn.turnId,
+      updatedAt: "2026-03-29T00:00:11.000Z",
+    };
+    const localDispatch = createLocalDispatchSnapshot({
+      id: ThreadId.make("thread-1"),
+      environmentId: localEnvironmentId,
+      codexThreadId: null,
+      projectId,
+      title: "Thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      session: activeSession,
+      messages: [],
+      proposedPlans: [],
+      error: null,
+      createdAt: "2026-03-29T00:00:00.000Z",
+      archivedAt: null,
+      updatedAt: "2026-03-29T00:00:11.000Z",
+      latestTurn: activeLatestTurn,
+      branch: null,
+      worktreePath: null,
+      turnDiffSummaries: [],
+      activities: [],
+    });
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "running",
+        latestTurn: activeLatestTurn,
+        session: {
+          ...activeSession,
+          updatedAt: "2026-03-29T00:00:12.000Z",
+        },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
   });
 
   it("clears local dispatch once the running latestTurn matches the active session turn", () => {

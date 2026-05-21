@@ -1050,8 +1050,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
   );
   const collapsedComposerPrimaryActionDisabled =
-    phase === "running" || isSendBusy || isConnecting || !composerSendState.hasSendableContent;
-  const collapsedComposerPrimaryActionLabel = "Send message";
+    isSendBusy ||
+    isConnecting ||
+    environmentUnavailable !== null ||
+    !(phase === "running"
+      ? composerSendState.hasTextualSendableContent
+      : composerSendState.hasSendableContent);
+  const collapsedComposerPrimaryActionLabel =
+    phase === "running" ? "Send follow-up" : "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -1959,8 +1965,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
-            "rounded-[20px] border bg-card transition-colors duration-200 has-focus-visible:border-ring/45",
-            isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
+            "rounded-[20px] border bg-card shadow-sm/10 transition-colors duration-200 has-focus-visible:border-ring/45",
+            isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border/60",
             environmentUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,
           )}
@@ -2052,7 +2058,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <button
                     type="button"
                     className={cn(
-                      "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
+                      "chat-typography min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
                       activePendingProgress?.customAnswer
                         ? "text-foreground"
                         : "text-muted-foreground/60",
@@ -2092,7 +2098,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               <button
                 type="button"
                 className={cn(
-                  "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
+                  "chat-typography min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
                   (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
                     ? "text-foreground"
                     : "text-muted-foreground/35",

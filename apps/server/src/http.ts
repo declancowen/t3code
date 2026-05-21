@@ -10,6 +10,7 @@ import {
   HttpBody,
   HttpClient,
   HttpClientResponse,
+  HttpMiddleware,
   HttpRouter,
   HttpServerResponse,
   HttpServerRequest,
@@ -32,6 +33,7 @@ import {
   browserApiCorsAllowedHeaders,
   browserApiCorsAllowedMethods,
   browserApiCorsHeaders,
+  isBrowserApiCorsOriginAllowed,
 } from "./httpCors.ts";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
@@ -39,11 +41,16 @@ const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" vi
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 
-export const browserApiCorsLayer = HttpRouter.cors({
-  allowedMethods: [...browserApiCorsAllowedMethods],
-  allowedHeaders: [...browserApiCorsAllowedHeaders],
-  maxAge: 600,
-});
+export const browserApiCorsLayer = HttpRouter.middleware(
+  HttpMiddleware.cors({
+    allowedOrigins: isBrowserApiCorsOriginAllowed,
+    allowedMethods: [...browserApiCorsAllowedMethods],
+    allowedHeaders: [...browserApiCorsAllowedHeaders],
+    credentials: true,
+    maxAge: 600,
+  }),
+  { global: true },
+);
 
 export function isLoopbackHostname(hostname: string): boolean {
   const normalizedHostname = hostname

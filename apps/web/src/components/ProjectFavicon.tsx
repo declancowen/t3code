@@ -43,7 +43,7 @@ export function ProjectFavicon(input: {
       <img
         src={src}
         alt=""
-        className={`size-3.5 shrink-0 rounded-sm object-contain ${status === "loaded" ? "" : "hidden"} ${input.className ?? ""}`}
+        className={`size-3.5 shrink-0 rounded-[3px] object-contain ${status === "loaded" ? "" : "hidden"} ${input.className ?? ""}`}
         onLoad={() => {
           loadedProjectFaviconSrcs.add(src);
           setStatus("loaded");

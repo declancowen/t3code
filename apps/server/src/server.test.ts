@@ -908,8 +908,12 @@ const splitHeaderTokens = (value: string | null) =>
     .filter((token) => token.length > 0)
     .toSorted();
 
-const assertBrowserApiCorsHeaders = (headers: Headers) => {
-  assert.equal(headers.get("access-control-allow-origin"), "*");
+const assertBrowserApiCorsHeaders = (headers: Headers, options?: { readonly origin?: string }) => {
+  assert.equal(headers.get("access-control-allow-origin"), options?.origin ?? "*");
+  if (options?.origin !== undefined) {
+    assert.equal(headers.get("access-control-allow-credentials"), "true");
+    assert.include(splitHeaderTokens(headers.get("vary")), "Origin");
+  }
   assert.deepEqual(splitHeaderTokens(headers.get("access-control-allow-methods")), [
     "GET",
     "OPTIONS",
@@ -1062,7 +1066,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       )) as typeof testEnvironmentDescriptor;
 
       assert.equal(response.status, 200);
-      assertBrowserApiCorsHeaders(response.headers);
+      assertBrowserApiCorsHeaders(response.headers, { origin: crossOriginClientOrigin });
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -1203,7 +1207,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(bootstrapResponse.status, 200);
-      assertBrowserApiCorsHeaders(bootstrapResponse.headers);
+      assertBrowserApiCorsHeaders(bootstrapResponse.headers, { origin });
       assert.equal(bootstrapBody.authenticated, true);
       assert.equal(typeof bootstrapBody.sessionToken, "string");
 
@@ -1222,7 +1226,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       };
 
       assert.equal(sessionResponse.status, 200);
-      assertBrowserApiCorsHeaders(sessionResponse.headers);
+      assertBrowserApiCorsHeaders(sessionResponse.headers, { origin });
       assert.equal(sessionBody.authenticated, true);
       assert.equal(sessionBody.sessionMethod, "bearer-session-token");
 
@@ -1241,7 +1245,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       };
 
       assert.equal(wsTokenResponse.status, 200);
-      assertBrowserApiCorsHeaders(wsTokenResponse.headers);
+      assertBrowserApiCorsHeaders(wsTokenResponse.headers, { origin });
       assert.equal(typeof wsTokenBody.token, "string");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -1265,7 +1269,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         );
 
         assert.equal(response.status, 204);
-        assertBrowserApiCorsHeaders(response.headers);
+        assertBrowserApiCorsHeaders(response.headers, { origin: crossOriginClientOrigin });
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1287,7 +1291,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       };
 
       assert.equal(response.status, 401);
-      assertBrowserApiCorsHeaders(response.headers);
+      assertBrowserApiCorsHeaders(response.headers, { origin: crossOriginClientOrigin });
       assert.equal(body.error, "Authentication required.");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -1881,7 +1885,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
 
       assert.equal(response.status, 204);
-      assert.equal(response.headers["access-control-allow-origin"], "*");
+      assert.equal(response.headers["access-control-allow-origin"], "http://localhost:5733");
+      assert.equal(response.headers["access-control-allow-credentials"], "true");
       assert.deepEqual(localTraceRecords, [
         {
           type: "otlp-span",
@@ -1947,7 +1952,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(response.status, 204);
-      assert.equal(response.headers.get("access-control-allow-origin"), "*");
+      assert.equal(response.headers.get("access-control-allow-origin"), "http://localhost:5733");
+      assert.equal(response.headers.get("access-control-allow-credentials"), "true");
+      assert.include(splitHeaderTokens(response.headers.get("vary")), "Origin");
       assert.deepEqual(splitHeaderTokens(response.headers.get("access-control-allow-methods")), [
         "GET",
         "OPTIONS",

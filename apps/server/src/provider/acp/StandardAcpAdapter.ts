@@ -74,6 +74,13 @@ export interface StandardAcpAdapterOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  readonly activePromptMessageMethod?: string;
+  readonly sendMessageWhilePromptActive?: (input: {
+    readonly runtime: AcpSessionRuntimeShape;
+    readonly sessionId: string;
+    readonly content: string;
+    readonly contentBlocks: ReadonlyArray<EffectAcpSchema.ContentBlock>;
+  }) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
   readonly makeRuntime: (
     input: {
       readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
@@ -98,12 +105,18 @@ interface StandardAcpSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
+  readonly acpSessionId: string;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  activePrompt:
+    | {
+        readonly turnId: TurnId;
+      }
+    | undefined;
   stopped: boolean;
 }
 
@@ -383,6 +396,58 @@ export function makeStandardAcpAdapter(
       return Effect.succeed(ctx);
     };
 
+    const buildPromptContentBlocks = (
+      input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
+      method: string,
+    ) =>
+      Effect.gen(function* () {
+        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
+        if (input.input?.trim()) {
+          promptParts.push({ type: "text", text: input.input.trim() });
+        }
+        if (input.attachments && input.attachments.length > 0) {
+          for (const attachment of input.attachments) {
+            const attachmentPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (!attachmentPath) {
+              return yield* new ProviderAdapterRequestError({
+                provider,
+                method,
+                detail: `Invalid attachment id '${attachment.id}'.`,
+              });
+            }
+            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider,
+                    method,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            promptParts.push({
+              type: "image",
+              data: Buffer.from(bytes).toString("base64"),
+              mimeType: attachment.mimeType,
+            });
+          }
+        }
+
+        if (promptParts.length === 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider,
+            operation: "sendTurn",
+            issue: "Turn requires non-empty text or attachments.",
+          });
+        }
+
+        return promptParts;
+      });
+
     const stopSessionInternal = (ctx: StandardAcpSessionContext) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
@@ -572,12 +637,14 @@ export function makeStandardAcpAdapter(
             session,
             scope: sessionScope,
             acp,
+            acpSessionId: started.sessionId,
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            activePrompt: undefined,
             stopped: false,
           };
 
@@ -680,6 +747,56 @@ export function makeStandardAcpAdapter(
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        const activePromptTurnId =
+          ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
+        if (activePromptTurnId && options.sendMessageWhilePromptActive) {
+          const method = options.activePromptMessageMethod ?? "session/message";
+          const contentBlocks = yield* buildPromptContentBlocks(input, method);
+          const content = contentBlocks
+            .filter(
+              (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
+                block.type === "text",
+            )
+            .map((block) => block.text)
+            .join("\n")
+            .trim();
+          yield* options
+            .sendMessageWhilePromptActive({
+              runtime: ctx.acp,
+              sessionId: ctx.acpSessionId,
+              content,
+              contentBlocks,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                mapAcpToAdapterError(provider, input.threadId, method, error),
+              ),
+            );
+
+          ctx.activePrompt = { turnId: activePromptTurnId };
+          ctx.activeTurnId = activePromptTurnId;
+          ctx.session = {
+            ...ctx.session,
+            activeTurnId: activePromptTurnId,
+            updatedAt: yield* nowIso,
+          };
+
+          yield* offerRuntimeEvent({
+            type: "turn.started",
+            ...(yield* makeEventStamp()),
+            provider,
+            threadId: input.threadId,
+            turnId: activePromptTurnId,
+            payload: {},
+          });
+
+          return {
+            threadId: input.threadId,
+            turnId: activePromptTurnId,
+            resumeCursor: ctx.session.resumeCursor,
+          };
+        }
+
         const turnId = TurnId.make(crypto.randomUUID());
         const turnModel =
           input.modelSelection?.instanceId === boundInstanceId
@@ -694,6 +811,13 @@ export function makeStandardAcpAdapter(
           mapError: ({ cause, method }) =>
             mapAcpToAdapterError(provider, input.threadId, method, cause),
         });
+
+        const promptParts = yield* buildPromptContentBlocks(input, "session/prompt");
+
+        const previousActivePrompt = ctx.activePrompt;
+        const previousActiveTurnId = ctx.activeTurnId;
+        const previousSessionActiveTurnId = ctx.session.activeTurnId;
+        ctx.activePrompt = { turnId };
         ctx.activeTurnId = turnId;
         ctx.lastPlanFingerprint = undefined;
         ctx.session = {
@@ -711,50 +835,6 @@ export function makeStandardAcpAdapter(
           payload: model ? { model } : {},
         });
 
-        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
-        }
-        if (input.attachments && input.attachments.length > 0) {
-          for (const attachment of input.attachments) {
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment,
-            });
-            if (!attachmentPath) {
-              return yield* new ProviderAdapterRequestError({
-                provider,
-                method: "session/prompt",
-                detail: `Invalid attachment id '${attachment.id}'.`,
-              });
-            }
-            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterRequestError({
-                    provider,
-                    method: "session/prompt",
-                    detail: cause.message,
-                    cause,
-                  }),
-              ),
-            );
-            promptParts.push({
-              type: "image",
-              data: Buffer.from(bytes).toString("base64"),
-              mimeType: attachment.mimeType,
-            });
-          }
-        }
-
-        if (promptParts.length === 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider,
-            operation: "sendTurn",
-            issue: "Turn requires non-empty text or attachments.",
-          });
-        }
-
         const result = yield* ctx.acp
           .prompt({
             prompt: promptParts,
@@ -763,15 +843,35 @@ export function makeStandardAcpAdapter(
             Effect.mapError((error) =>
               mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
             ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (ctx.activePrompt?.turnId === turnId) {
+                  ctx.activePrompt = previousActivePrompt;
+                }
+                if (ctx.activeTurnId === turnId) {
+                  ctx.activeTurnId = previousActiveTurnId;
+                }
+                if (ctx.session.activeTurnId === turnId) {
+                  const nextSession = { ...ctx.session };
+                  if (previousSessionActiveTurnId !== undefined) {
+                    nextSession.activeTurnId = previousSessionActiveTurnId;
+                  } else {
+                    delete nextSession.activeTurnId;
+                  }
+                  ctx.session = nextSession;
+                }
+              }),
+            ),
           );
 
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
-        ctx.session = {
+        const nextSession = {
           ...ctx.session,
-          activeTurnId: turnId,
           updatedAt: yield* nowIso,
           ...(model ? { model } : {}),
         };
+        delete nextSession.activeTurnId;
+        ctx.session = nextSession;
 
         yield* offerRuntimeEvent({
           type: "turn.completed",
@@ -797,6 +897,9 @@ export function makeStandardAcpAdapter(
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        // ACP owns prompt termination. Keep the turn active until the prompt
+        // call returns; still forward cancel when local prompt state is missing
+        // because a resumed provider may have remote work in flight.
         yield* Effect.ignore(
           ctx.acp.cancel.pipe(
             Effect.mapError((error) =>

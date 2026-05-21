@@ -189,17 +189,19 @@ export function deriveComposerSendState(options: {
   sendableTerminalContexts: TerminalContextDraft[];
   expiredTerminalContextCount: number;
   hasSendableContent: boolean;
+  hasTextualSendableContent: boolean;
 } {
   const trimmedPrompt = stripInlineTerminalContextPlaceholders(options.prompt).trim();
   const sendableTerminalContexts = filterTerminalContextsWithText(options.terminalContexts);
   const expiredTerminalContextCount =
     options.terminalContexts.length - sendableTerminalContexts.length;
+  const hasTextualSendableContent = trimmedPrompt.length > 0 || sendableTerminalContexts.length > 0;
   return {
     trimmedPrompt,
     sendableTerminalContexts,
     expiredTerminalContextCount,
-    hasSendableContent:
-      trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
+    hasSendableContent: hasTextualSendableContent || options.imageCount > 0,
+    hasTextualSendableContent,
   };
 }
 
@@ -358,10 +360,20 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
     input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
     input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
+  const sessionChanged =
+    input.localDispatch.sessionOrchestrationStatus !== (session?.orchestrationStatus ?? null) ||
+    input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null);
 
   if (input.phase === "running") {
     if (!latestTurnChanged) {
-      return false;
+      const activeTurnAcknowledged =
+        input.localDispatch.latestTurnTurnId !== null &&
+        input.localDispatch.latestTurnTurnId === latestTurn?.turnId &&
+        input.localDispatch.latestTurnCompletedAt === null &&
+        session?.activeTurnId !== undefined &&
+        session.activeTurnId !== null &&
+        latestTurn?.turnId === session.activeTurnId;
+      return activeTurnAcknowledged && sessionChanged;
     }
     if (latestTurn?.startedAt === null || latestTurn === null) {
       return false;
@@ -376,9 +388,5 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     return true;
   }
 
-  return (
-    latestTurnChanged ||
-    input.localDispatch.sessionOrchestrationStatus !== (session?.orchestrationStatus ?? null) ||
-    input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
-  );
+  return latestTurnChanged || sessionChanged;
 }

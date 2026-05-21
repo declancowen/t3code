@@ -192,6 +192,7 @@ import {
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
+import { buildChatTypographyStyle } from "../appearance";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -632,6 +633,16 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
   );
   const settings = useSettings();
+  const appearanceChatFontFamily = settings.appearanceChatFontFamily;
+  const appearanceChatFontSize = settings.appearanceChatFontSize;
+  const chatTypographyStyle = useMemo(
+    () =>
+      buildChatTypographyStyle({
+        appearanceChatFontFamily,
+        appearanceChatFontSize,
+      }),
+    [appearanceChatFontFamily, appearanceChatFontSize],
+  );
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -3497,7 +3508,7 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl bg-background">
       {/* Top bar */}
       <header
         className={cn(
@@ -3549,7 +3560,7 @@ export default function ChatView(props: ChatViewProps) {
       {/* Main content area with optional plan sidebar */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col" style={chatTypographyStyle}>
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}

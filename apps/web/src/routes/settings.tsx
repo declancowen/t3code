@@ -35,7 +35,8 @@ function SettingsContentLayout() {
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const showRestoreDefaults = location.pathname === "/settings/general";
+  const showRestoreDefaults =
+    location.pathname === "/settings/general" || location.pathname === "/settings/appearance";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
@@ -61,10 +62,10 @@ function SettingsContentLayout() {
   }, [navigateBackWithinApp]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+    <SidebarInset className="app-sidebar-backing h-dvh min-h-0 overflow-hidden overscroll-y-none text-foreground isolate">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-l-2xl bg-background text-foreground">
         {!isElectron && (
-          <header className="border-b border-border px-3 py-2 sm:px-5">
+          <header className="px-3 py-2 sm:px-5">
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
               <SidebarTrigger className="size-7 shrink-0 md:hidden" />
               <span className="text-sm font-medium text-foreground">Settings</span>
@@ -78,7 +79,7 @@ function SettingsContentLayout() {
         )}
 
         {isElectron && (
-          <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+          <div className="drag-region flex h-[52px] shrink-0 items-center px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>
