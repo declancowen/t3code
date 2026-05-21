@@ -9,6 +9,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -17,6 +18,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -41,6 +43,7 @@ import {
 
 const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
 const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
+const INSTALL_BACKEND_STOP_TIMEOUT = Duration.seconds(10);
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
@@ -186,6 +189,7 @@ function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean 
 const make = Effect.gen(function* () {
   const config = yield* DesktopConfig.DesktopConfig;
   const desktopState = yield* DesktopState.DesktopState;
+  const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -370,9 +374,12 @@ const make = Effect.gen(function* () {
         message: null,
         errorContext: null,
       }));
+      yield* Ref.set(desktopState.quitting, true);
       yield* logUpdaterInfo("installing downloaded update", {
         version: state.downloadedVersion ?? state.availableVersion ?? "unknown",
       });
+      yield* logUpdaterInfo("stopping desktop backend before update install");
+      yield* backendManager.stop({ timeout: INSTALL_BACKEND_STOP_TIMEOUT });
       yield* electronUpdater.quitAndInstall({
         isSilent: true,
         isForceRunAfter: true,
@@ -386,6 +393,13 @@ const make = Effect.gen(function* () {
             reduceDesktopUpdateStateOnInstallFailure(current, error.message),
           );
           yield* Ref.set(desktopState.quitting, false);
+          yield* backendManager.start.pipe(
+            Effect.catchCause((cause) =>
+              logUpdaterError("failed to restart desktop backend after update install failure", {
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
           yield* logUpdaterError("failed to install update", { message: error.message });
           return { accepted: true, completed: false };
         }),

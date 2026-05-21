@@ -38,6 +38,7 @@ interface UpdatesHarnessOptions {
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
   >;
+  readonly quitAndInstall?: Effect.Effect<void, ElectronUpdater.ElectronUpdaterQuitAndInstallError>;
   readonly env?: Record<string, string | undefined>;
 }
 
@@ -47,6 +48,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
   let destroyAllCount = 0;
   let quitAndInstallCount = 0;
+  let startCount = 0;
   let stopCount = 0;
   let allowDowngrade = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
@@ -87,12 +89,12 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     setDisableDifferentialDownload: () => Effect.void,
     checkForUpdates: Effect.sync(() => {
       checkCount += 1;
-    }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
+    }).pipe(Effect.flatMap(() => options.checkForUpdates ?? Effect.void)),
     downloadUpdate: Effect.void,
     quitAndInstall: () =>
       Effect.sync(() => {
         quitAndInstallCount += 1;
-      }),
+      }).pipe(Effect.flatMap(() => options.quitAndInstall ?? Effect.void)),
     on: (eventName, listener) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -124,7 +126,9 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   } satisfies ElectronWindow.ElectronWindowShape);
 
   const backendLayer = Layer.succeed(DesktopBackendManager.DesktopBackendManager, {
-    start: Effect.void,
+    start: Effect.sync(() => {
+      startCount += 1;
+    }),
     stop: () =>
       Effect.sync(() => {
         stopCount += 1;
@@ -187,6 +191,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     destroyAllCount: () => destroyAllCount,
     feedUrls: () => feedUrls,
     quitAndInstallCount: () => quitAndInstallCount,
+    startCount: () => startCount,
     stopCount: () => stopCount,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
@@ -250,36 +255,69 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect(
-    "delegates downloaded update installs to Electron without pre-destroying the UI",
-    () => {
-      const harness = makeHarness();
+  it.effect("stops the desktop backend before installing a downloaded update", () => {
+    const harness = makeHarness();
 
-      return Effect.scoped(
-        Effect.gen(function* () {
-          const updates = yield* DesktopUpdates.DesktopUpdates;
-          yield* updates.configure;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
 
-          harness.emit("update-available", { version: "1.2.4" });
-          yield* flushCallbacks;
-          harness.emit("update-downloaded", { version: "1.2.4" });
-          yield* flushCallbacks;
+        harness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
 
-          const result = yield* updates.install;
+        const result = yield* updates.install;
 
-          assert.equal(result.accepted, true);
-          assert.equal(result.completed, false);
-          assert.equal(harness.quitAndInstallCount(), 1);
-          assert.equal(harness.stopCount(), 0);
-          assert.equal(harness.destroyAllCount(), 0);
+        assert.equal(result.accepted, true);
+        assert.equal(result.completed, false);
+        assert.equal(harness.stopCount(), 1);
+        assert.equal(harness.quitAndInstallCount(), 1);
+        assert.equal(harness.destroyAllCount(), 0);
 
-          const duplicateResult = yield* updates.install;
-          assert.equal(duplicateResult.accepted, false);
-          assert.equal(harness.quitAndInstallCount(), 1);
-        }),
-      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-    },
-  );
+        const duplicateResult = yield* updates.install;
+        assert.equal(duplicateResult.accepted, false);
+        assert.equal(harness.stopCount(), 1);
+        assert.equal(harness.quitAndInstallCount(), 1);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("restarts the desktop backend when the downloaded update install handoff fails", () => {
+    const error = new ElectronUpdater.ElectronUpdaterQuitAndInstallError({
+      cause: new Error("boom"),
+    });
+    const failingHarness = makeHarness({
+      quitAndInstall: Effect.fail(error),
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        failingHarness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+        failingHarness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        const result = yield* updates.install;
+
+        assert.equal(result.accepted, true);
+        assert.equal(result.completed, false);
+        assert.equal(result.state.status, "downloaded");
+        assert.equal(result.state.errorContext, "install");
+        assert.equal(
+          result.state.message,
+          "Electron updater failed to quit and install the update.",
+        );
+        assert.equal(failingHarness.stopCount(), 1);
+        assert.equal(failingHarness.quitAndInstallCount(), 1);
+        assert.equal(failingHarness.startCount(), 1);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), failingHarness.layer)));
+  });
 
   it.effect("persists channel changes through the settings service", () => {
     const harness = makeHarness();
