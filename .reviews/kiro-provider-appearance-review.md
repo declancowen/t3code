@@ -6,7 +6,7 @@
 | -------------- | ---------------------------------------- |
 | **Repository** | `declancowen/t3code`                     |
 | **Remote**     | `origin`                                 |
-| **Branch**     | `main`                                   |
+| **Branch**     | `merge-upstream-main-check`              |
 | **Stack**      | TypeScript, Effect, React/Vite, Electron |
 
 ## Scope
@@ -14,6 +14,7 @@
 - `apps/server/src/provider/acp/StandardAcpAdapter.ts` — ACP prompt lifecycle and active-prompt steering.
 - `apps/server/src/provider/Layers/KiroAdapter.ts` — Kiro `_message/send` payload mapping.
 - `packages/effect-acp/src/protocol.ts` — ACP JSON-RPC transport compatibility for provider-originated requests.
+- `packages/effect-acp/src/client.test.ts`, `packages/effect-acp/src/protocol.test.ts` — ACP transport error-channel regression coverage.
 - `apps/server/src/provider/acp/AcpAdapterSupport.ts`, `apps/server/src/provider/acp/AcpRuntimeModel.ts` — ACP permission outcome mapping and tool-call classification.
 - `apps/server/src/provider/acp/StandardAcpAdapter.test.ts` — ACP steering regression coverage.
 - `apps/web/src/components/ChatView.tsx` — running-turn image send guard removal.
@@ -26,6 +27,7 @@
 - Kiro cancel behavior because Kiro currently rejects `session/cancel`.
 - ACP permission requests with provider-owned UUID request IDs and provider-owned option IDs.
 - Active-prompt steering payload compatibility for text and image attachments.
+- ACP JSON-RPC response error normalization and provider error data surfacing.
 - Running-turn UI send behavior across provider adapters.
 - Sidebar/translucency surface consistency across route wrappers.
 - macOS app icon visual bounds, corner radius, and generated package assets.
@@ -35,11 +37,65 @@
 | Field                 | Value                |
 | --------------------- | -------------------- |
 | **Review started**    | 2026-05-20           |
-| **Last reviewed**     | 2026-05-21 07:08 BST |
-| **Total turns**       | 8                    |
+| **Last reviewed**     | 2026-05-23 21:24 BST |
+| **Total turns**       | 9                    |
 | **Open findings**     | 0                    |
 | **Resolved findings** | 6                    |
 | **Accepted findings** | 0                    |
+
+## Turn 9 — 2026-05-23 21:24 BST
+
+| Field           | Value        |
+| --------------- | ------------ |
+| **Commit**      | working tree |
+| **IDE / Agent** | Codex        |
+
+**Summary:** Reviewed the Kiro/ACP image attachment fix that preserves native ACP image prompts while surfacing provider JSON-RPC errors as request errors instead of Effect decode defects.
+**Outcome:** No findings.
+**Risk score:** High — this changes shared ACP transport response handling, the shared ACP adapter attachment path, and Kiro provider-specific attachment validation.
+**Change archetypes:** protocol compatibility, provider capability guard, attachment validation, error-channel preservation, regression coverage.
+**Intended change:** Keep image upload support for Kiro, reject unsupported image paths clearly, and preserve provider error `data` so invalid images no longer show the low-level `Internal error at decode` stack.
+**Intent vs actual:** The diff matches the intent. JSON-RPC response errors that the Effect RPC layer decoded as `Die` defects are normalized back to protocol failures before reaching core RPC callers or generic extension callers. `mapAcpToAdapterError` can now read the preserved `data`. Shared ACP content-block construction checks the agent's advertised image prompt capability and lets providers supply their own image MIME allowlist. Kiro wires the allowlist to PNG/JPEG/GIF/WebP without moving provider policy into the transport layer.
+**Confidence:** High for transport and adapter behavior because both core RPC and extension request error paths now have direct tests. Medium for Kiro's private active-prompt `_message/send` image payload contract because that path is covered by the shared adapter unit test, while the live provider probe covered normal `session/prompt` image handling and invalid image error surfacing.
+**Coverage note:** Added focused tests for ACP JSON-RPC error surfacing, extension error surfacing, image-capability rejection, and provider MIME allowlist rejection.
+**Finding triage:** No open findings. The main candidate failures were checked directly: protocol errors still route through typed `AcpRequestError`, non-image-capable agents cannot receive image blocks, and Kiro rejects unsupported MIME types before file read/provider dispatch.
+**Static/analyzer evidence:** No analyzer policy changes. Fallow is not available in this repo context. Lint passed with the existing 9 warnings unrelated to this diff.
+**Architecture impact:** The capability invariant lives in the shared ACP adapter, where prompt content is materialized for all standard ACP providers. Kiro's narrower MIME policy remains in `KiroAdapter`, preserving provider ownership. Transport normalization stays in `effect-acp` and is not Kiro-specific.
+**Bug classes / invariants checked:** provider JSON-RPC errors preserve code/message/data; core RPC and generic extension errors use the request error channel; image content is only sent to agents advertising image prompt support; provider MIME allowlists reject unsupported image types before dispatch; Kiro image types align with the existing Claude/common vision set.
+**Branch totality:** Reviewed the scoped local diff for the ACP/Kiro image fix. The working tree still contains unrelated `.gitignore`, app-logo, public, and release artifact changes that are intentionally outside this review and commit scope.
+**Sibling closure:** Checked `AcpAdapterSupport` error formatting, ACP error classes, attachment path resolution, Claude/Codex/Cursor image attachment patterns, shared ACP prompt construction, Kiro active-prompt send mapping, and web send attachment handoff.
+**Remediation impact surface:** Affects Kiro and any future provider using `makeStandardAcpAdapter` with image attachments. Cursor remains on its separate adapter path. Existing text-only ACP prompt behavior is unchanged.
+**Residual risk / unknowns:** Kiro's private `_message/send` method is not an ACP standard contract; the shared adapter payload shape is tested, but provider behavior could still change outside this repo.
+
+### Validation
+
+- `bun run test src/client.test.ts src/protocol.test.ts` from `packages/effect-acp` — passed, 17 tests.
+- `bun run test src/provider/acp/StandardAcpAdapter.test.ts` from `apps/server` — passed, 10 tests.
+- `bun fmt` — passed.
+- `bun lint` — passed with 9 existing warnings.
+- `bun typecheck` — passed, 13 packages.
+- `git diff --check -- apps/server/src/provider/Layers/KiroAdapter.ts apps/server/src/provider/acp/StandardAcpAdapter.test.ts apps/server/src/provider/acp/StandardAcpAdapter.ts packages/effect-acp/src/client.test.ts packages/effect-acp/src/protocol.test.ts packages/effect-acp/src/protocol.ts` — passed.
+
+### Branch-totality proof
+
+- **Non-delta files/systems re-read:** diff-review gates, all-clear antipatterns, architecture implementation checklist, `AcpAdapterSupport`, `effect-acp` error classes, attachment store/mime helpers, Claude/Codex/Cursor attachment handling, web send attachment handoff.
+- **Prior open findings rechecked:** No open findings remained from Turn 8.
+- **Prior resolved/adjacent areas revalidated:** Active-prompt attachment steering remains routed through the existing Kiro `_message/send` hook; Kiro stop/cancel behavior is unchanged by this turn.
+- **Hotspots or sibling paths revisited:** Shared ACP protocol response routing, generic extension pending requests, normal `session/prompt`, active-prompt content block construction, provider-specific MIME policy, attachment path resolution.
+- **Dependency/adjacent surfaces revalidated:** `mapAcpToAdapterError` already formats preserved provider `data`, so the transport fix now feeds the UI-facing detail path.
+- **Why this is enough:** The riskiest invariant is error-channel classification, and both the core RPC path and extension path are directly covered. The attachment support checks are enforced before dispatch and have unit coverage for both capability and MIME rejection.
+
+### Challenger pass
+
+Done — assumed the fix could either swallow true provider defects or block valid image-capable providers. The normalization only rewrites failure entries shaped like JSON-RPC protocol errors, and the image guard follows ACP `promptCapabilities.image` with Kiro-specific MIME policy isolated to the Kiro adapter.
+
+### Resolved / Carried / New findings
+
+- None.
+
+### Recommendations
+
+1. **Fix first:** none.
 
 ## Turn 8 — 2026-05-21 07:08 BST
 

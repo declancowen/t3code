@@ -75,6 +75,7 @@ export interface StandardAcpAdapterOptions {
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
   readonly activePromptMessageMethod?: string;
+  readonly supportedImageMimeTypes?: ReadonlySet<string>;
   readonly stopSessionOnInterruptCancelUnsupported?: boolean;
   readonly sendMessageWhilePromptActive?: (input: {
     readonly runtime: AcpSessionRuntimeShape;
@@ -107,6 +108,7 @@ interface StandardAcpSessionContext {
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
   readonly acpSessionId: string;
+  readonly supportsImagePrompts: boolean;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -136,6 +138,10 @@ function parseStandardAcpResume(raw: unknown): { sessionId: string } | undefined
   if (raw.protocol !== "acp") return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   return { sessionId: raw.sessionId.trim() };
+}
+
+function supportsImagePromptContent(initializeResult: EffectAcpSchema.InitializeResponse): boolean {
+  return initializeResult.agentCapabilities?.promptCapabilities?.image === true;
 }
 
 function normalizeModeSearchText(mode: AcpSessionMode): string {
@@ -400,6 +406,7 @@ export function makeStandardAcpAdapter(
     const buildPromptContentBlocks = (
       input: Parameters<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>[0],
       method: string,
+      supportsImagePrompts: boolean,
     ) =>
       Effect.gen(function* () {
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
@@ -407,7 +414,25 @@ export function makeStandardAcpAdapter(
           promptParts.push({ type: "text", text: input.input.trim() });
         }
         if (input.attachments && input.attachments.length > 0) {
+          if (!supportsImagePrompts) {
+            return yield* new ProviderAdapterValidationError({
+              provider,
+              operation: "sendTurn",
+              issue: `${options.runtimeLabel} session does not support image attachments.`,
+            });
+          }
           for (const attachment of input.attachments) {
+            const supportedImageMimeTypes = options.supportedImageMimeTypes;
+            if (
+              supportedImageMimeTypes &&
+              !supportedImageMimeTypes.has(attachment.mimeType.toLowerCase())
+            ) {
+              return yield* new ProviderAdapterRequestError({
+                provider,
+                method,
+                detail: `Unsupported ${options.runtimeLabel} image attachment type '${attachment.mimeType}'.`,
+              });
+            }
             const attachmentPath = resolveAttachmentPath({
               attachmentsDir: serverConfig.attachmentsDir,
               attachment,
@@ -639,6 +664,7 @@ export function makeStandardAcpAdapter(
             scope: sessionScope,
             acp,
             acpSessionId: started.sessionId,
+            supportsImagePrompts: supportsImagePromptContent(started.initializeResult),
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
@@ -752,7 +778,11 @@ export function makeStandardAcpAdapter(
           ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
         if (activePromptTurnId && options.sendMessageWhilePromptActive) {
           const method = options.activePromptMessageMethod ?? "session/message";
-          const contentBlocks = yield* buildPromptContentBlocks(input, method);
+          const contentBlocks = yield* buildPromptContentBlocks(
+            input,
+            method,
+            ctx.supportsImagePrompts,
+          );
           const content = contentBlocks
             .filter(
               (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
@@ -813,7 +843,11 @@ export function makeStandardAcpAdapter(
             mapAcpToAdapterError(provider, input.threadId, method, cause),
         });
 
-        const promptParts = yield* buildPromptContentBlocks(input, "session/prompt");
+        const promptParts = yield* buildPromptContentBlocks(
+          input,
+          "session/prompt",
+          ctx.supportsImagePrompts,
+        );
 
         const previousActivePrompt = ctx.activePrompt;
         const previousActiveTurnId = ctx.activeTurnId;

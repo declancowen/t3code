@@ -2,6 +2,7 @@ import * as Path from "effect/Path";
 import * as AcpError from "./errors.ts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -41,6 +42,11 @@ const RequestPermissionRequest = jsonRpcRequest(
 const RequestPermissionResponse = jsonRpcResponse(AcpSchema.RequestPermissionResponse);
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
+const ExtErrorResponse = Schema.Struct({
+  jsonrpc: Schema.Literal("2.0"),
+  id: Schema.Union([Schema.Number, Schema.String]),
+  error: AcpSchema.Error,
+});
 const decodeSessionCancelNotification = Schema.decodeEffect(
   Schema.fromJsonString(SessionCancelNotification),
 );
@@ -227,6 +233,44 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
 
       const resolved = yield* Fiber.join(response);
       assert.deepEqual(resolved, { ok: true });
+    }),
+  );
+
+  it.effect("surfaces generic extension response errors through the request error channel", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+
+      const response = yield* transport
+        .request("x/test", { hello: "world" })
+        .pipe(Effect.flip, Effect.forkScoped);
+      const outbound = yield* Queue.take(output);
+      const decodedRequest = yield* decodeExtRequest(outbound);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtErrorResponse, {
+          jsonrpc: "2.0",
+          id: decodedRequest.id,
+          error: {
+            code: -32603,
+            message: "Internal error",
+            data: "extension failed",
+          },
+        }),
+      );
+
+      const exit = yield* Fiber.await(response);
+      if (!Exit.isSuccess(exit)) {
+        assert.fail("Expected request to fail with a response error");
+      }
+      const error = exit.value;
+      assert.instanceOf(error, AcpError.AcpRequestError);
+      assert.equal(error.message, "Internal error");
+      assert.equal(error.data, "extension failed");
     }),
   );
 
