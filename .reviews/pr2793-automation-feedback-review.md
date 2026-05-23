@@ -16,6 +16,7 @@
 - `apps/desktop/src/updates/DesktopUpdates.ts` — desktop updater install failure recovery.
 - `.github/workflows/desktop-release.yml` — manual desktop release tag/ref resolution.
 - `apps/web/src/components/chat/ComposerPrimaryActions.tsx` — compact idle send button rendering.
+- `apps/server/src/httpCors.ts` / `apps/server/src/http.ts` — credentialed browser API CORS trust boundary.
 
 ## Hotspots
 
@@ -24,16 +25,17 @@
 - Desktop update install handoff partial-failure recovery after the backend is stopped.
 - Manual release artifact provenance for versioned desktop releases.
 - Compact composer layout parity.
+- Credentialed browser API CORS origin reflection.
 
 ## Review status
 
 | Field                 | Value                |
 | --------------------- | -------------------- |
 | **Review started**    | 2026-05-23 22:15 BST |
-| **Last reviewed**     | 2026-05-23 22:15 BST |
-| **Total turns**       | 1                    |
+| **Last reviewed**     | 2026-05-23 22:35 BST |
+| **Total turns**       | 2                    |
 | **Open findings**     | 0                    |
-| **Resolved findings** | 5                    |
+| **Resolved findings** | 6                    |
 | **Accepted findings** | 0                    |
 
 ## Automation
@@ -44,6 +46,77 @@
 | **PR**               | `pingdotgg/t3code#2793`            |
 | **State authority**  | GitHub review threads              |
 | **Review file role** | Human-readable local review ledger |
+
+## Turn 2 — 2026-05-23 22:35 BST
+
+| Field           | Value        |
+| --------------- | ------------ |
+| **Commit**      | working tree |
+| **IDE / Agent** | Codex        |
+
+### Automation context
+
+| Field                          | Value                                      |
+| ------------------------------ | ------------------------------------------ |
+| **Trigger**                    | Fresh `@codex review` after push           |
+| **PR**                         | `pingdotgg/t3code#2793`                    |
+| **Base ref**                   | `main`                                     |
+| **Head SHA**                   | `dd6e413d243d0c521128713c5aaf7ba902b02c2d` |
+| **Previous reviewed head SHA** | `657f253c1d2daebc5ad7268d1bf8277d281397c8` |
+| **Trusted state source**       | `gh api graphql pullRequest.reviewThreads` |
+| **Verification policy**        | Focused CORS/server tests, then repo gates |
+
+**Summary:** Imported and fixed Codex's fresh P1 finding that credentialed browser API CORS reflected arbitrary valid HTTP(S) origins.
+**Outcome:** Resolved in the current tree; pending commit/push when required gates pass.
+**Risk score:** High — this is a credentialed cross-origin API boundary on authenticated local/remote server APIs.
+**Change archetypes:** API/transport security, auth-adjacent browser compatibility, hosted/loopback variant hardening.
+**Intended change:** Preserve legitimate hosted-app and local-dev browser access while preventing arbitrary websites from receiving credentialed CORS headers.
+**Intent vs actual:** The server CORS predicate now accepts only loopback origins and the known hosted app origins (`app.t3.codes`, `latest.app.t3.codes`, `nightly.app.t3.codes`). The global CORS middleware was replaced with a server-owned middleware so `access-control-allow-credentials: true` is emitted only for trusted origins, including preflight responses.
+**Confidence:** High for the reviewed boundary and covered variants; hosted custom-domain CORS remains intentionally unsupported without a future explicit configuration surface.
+**Coverage note:** Added focused helper coverage for trusted/hostile origins and an integration regression proving untrusted auth failures are not reflected and do not receive credentialed CORS.
+**Finding triage:** Live in `dd6e413d`; fixed in the current working tree.
+**Static/analyzer evidence:** No analyzer policy changed. Fallow remains unavailable in this repo/PATH.
+**Architecture impact:** The credentialed CORS invariant is now owned by `httpCors.ts` and applied at the HTTP transport middleware boundary in `http.ts`; route handlers keep using the same helper instead of duplicating origin policy.
+**Bug classes / invariants checked:** auth-adjacent cross-origin trust boundary; loopback vs hosted vs hostile origin variants; credential header emission must be tied to explicit trusted origins.
+**Branch totality:** Rechecked the PR automation threads after the first push, resolved stale/outdated prior Codex threads, and imported the only fresh current-SHA Codex finding.
+**Sibling closure:** Checked auth success, auth failure, websocket-token preflight, public environment descriptor, and browser OTLP preflight paths that receive browser API CORS headers.
+**Remediation impact surface:** Affects all browser API routes through the global route layer. Local loopback dev and known hosted app origins continue to work; arbitrary hosted origins receive no credentialed CORS.
+**Residual risk / unknowns:** Custom hosted app origins would need an explicit future server config field rather than falling through to arbitrary origin reflection.
+
+### External Finding Import
+
+| Source | Finding                                              | Current status | Bug class                                 | Missed invariant/variant                                | Action                                             |
+| ------ | ---------------------------------------------------- | -------------- | ----------------------------------------- | ------------------------------------------------------- | -------------------------------------------------- |
+| Codex  | Credentialed CORS reflects arbitrary HTTP(S) origins | resolved       | Auth-Adjacent Cross-Origin Trust Boundary | credentials must only be allowed for trusted UI origins | fixed with trusted-origin predicate and middleware |
+
+### Validation
+
+- `bun run --cwd apps/server test src/http.test.ts src/server.test.ts` — passed, 70 tests.
+
+### Branch-totality proof
+
+- **Non-delta files/systems re-read:** fresh Codex thread, Effect HTTP CORS middleware implementation, server CORS/auth tests, hosted pairing docs, release hosted app domain docs, auth route CORS helper.
+- **Prior open findings rechecked:** First five imported findings remain fixed; their old GitHub threads are resolved or outdated.
+- **Prior resolved/adjacent areas revalidated:** Macroscope correctness passed on `dd6e413d`; Cursor Bugbot passed on `dd6e413d`; stale Codex ACP/shell threads were resolved after current-tree proof.
+- **Hotspots or sibling paths revisited:** credentialed auth responses, auth failures, preflight handling, public descriptor response headers, OTLP trace preflight, local loopback dev redirect helper.
+- **Dependency/adjacent surfaces revalidated:** Hosted pairing expects direct backend reachability from the browser, and hosted release docs define the known app origins that remain trusted.
+- **Why this is enough:** The original defect was arbitrary-origin reflection with credentials; the current middleware no longer reflects untrusted origins and the regression test asserts the hostile-origin failure path.
+
+### Challenger pass
+
+Done — assumed the generic Effect CORS middleware could still leak credential headers even after tightening `allowedOrigins`. The first focused test caught that exact companion issue, so the fix now owns both origin reflection and credential-header emission.
+
+### Resolved / Carried / New findings
+
+- `PR2793-CORS-001` — resolved in the current working tree.
+  - Fingerprint: `apps/server/src/httpCors.ts:isBrowserApiCorsOriginAllowed:credentialed-cors-trust-boundary`
+  - Evidence: trusted origin allowlist and custom middleware conditional credential headers.
+  - Verification: `bun run --cwd apps/server test src/http.test.ts src/server.test.ts`.
+
+### Recommendations
+
+1. **Fix first:** commit and push the CORS remediation after repo gates pass.
+2. **Then address:** monitor PR checks again; only Vercel authorization should remain external if no new findings appear.
 
 ## Turn 1 — 2026-05-23 22:15 BST
 
