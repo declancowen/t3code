@@ -86,6 +86,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const nextRequestId = yield* Ref.make(1n);
   const nextServerRequestId = yield* Ref.make(1n);
   const serverRequestIdAliases = yield* Ref.make(new Map<string, string>());
+  const serverNativeRequestIds = yield* Ref.make(new Set<string>());
   const terminationHandled = yield* Ref.make(false);
   const extPending = yield* Ref.make(
     new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
@@ -281,29 +282,53 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     );
   };
 
+  const allocateServerRequestAliasId = Effect.fn("allocateServerRequestAliasId")(function* () {
+    const nativeRequestIds = yield* Ref.get(serverNativeRequestIds);
+    const aliases = yield* Ref.get(serverRequestIdAliases);
+    return yield* Ref.modify(nextServerRequestId, (current) => {
+      let candidate = current;
+      while (nativeRequestIds.has(String(candidate)) || aliases.has(String(candidate))) {
+        candidate += 1n;
+      }
+      return [String(candidate), candidate + 1n] as const;
+    });
+  });
+
   const normalizeServerRequestId = (
     message: RpcMessage.RequestEncoded,
   ): Effect.Effect<RpcMessage.RequestEncoded> => {
-    if (isRpcServerCompatibleRequestId(message.id)) {
-      return Effect.succeed(message);
-    }
-
-    return Ref.modify(nextServerRequestId, (current) => {
-      const internalRequestId = String(current);
-      return [internalRequestId, current + 1n] as const;
+    return Effect.all({
+      aliases: Ref.get(serverRequestIdAliases),
+      nativeRequestIds: Ref.get(serverNativeRequestIds),
     }).pipe(
-      Effect.flatMap((internalRequestId) =>
-        Ref.update(serverRequestIdAliases, (aliases) => {
-          const next = new Map(aliases);
-          next.set(internalRequestId, message.id);
-          return next;
-        }).pipe(
-          Effect.as({
-            ...message,
-            id: internalRequestId,
-          }),
-        ),
-      ),
+      Effect.flatMap(({ aliases, nativeRequestIds }) => {
+        if (
+          isRpcServerCompatibleRequestId(message.id) &&
+          !aliases.has(message.id) &&
+          !nativeRequestIds.has(message.id)
+        ) {
+          return Ref.update(serverNativeRequestIds, (requestIds) => {
+            const next = new Set(requestIds);
+            next.add(message.id);
+            return next;
+          }).pipe(Effect.as(message));
+        }
+
+        return allocateServerRequestAliasId().pipe(
+          Effect.flatMap((internalRequestId) =>
+            Ref.update(serverRequestIdAliases, (aliases) => {
+              const next = new Map(aliases);
+              next.set(internalRequestId, message.id);
+              return next;
+            }).pipe(
+              Effect.as({
+                ...message,
+                id: internalRequestId,
+              }),
+            ),
+          ),
+        );
+      }),
     );
   };
 
@@ -325,7 +350,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         next.delete(response.requestId);
       }
       return [{ ...response, requestId: originalRequestId }, next] as const;
-    });
+    }).pipe(
+      Effect.flatMap((restoredResponse) => {
+        if (restoredResponse !== response || response._tag !== "Exit") {
+          return Effect.succeed(restoredResponse);
+        }
+        return Ref.update(serverNativeRequestIds, (requestIds) => {
+          if (!requestIds.has(response.requestId)) {
+            return requestIds;
+          }
+          const next = new Set(requestIds);
+          next.delete(response.requestId);
+          return next;
+        }).pipe(Effect.as(response));
+      }),
+    );
   };
 
   const handleRequestEncoded = (message: RpcMessage.RequestEncoded) => {

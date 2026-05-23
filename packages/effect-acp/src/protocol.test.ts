@@ -413,6 +413,116 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("avoids alias collisions with native numeric inbound core request ids", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(["session/request_permission"]),
+      });
+      const inboundRequests = yield* Queue.unbounded<unknown>();
+      const nonNumericRequestId = "aee865ed-8360-495a-8007-d135a97a0b4a";
+
+      yield* transport.serverProtocol
+        .run((_clientId, message) => Queue.offer(inboundRequests, message).pipe(Effect.asVoid))
+        .pipe(Effect.forkScoped);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(RequestPermissionRequest, {
+          jsonrpc: "2.0",
+          id: nonNumericRequestId,
+          method: "session/request_permission",
+          params: {
+            sessionId: "session-1",
+            toolCall: {
+              toolCallId: "tool-1",
+              title: "Editing ComposerPrimaryActions.tsx",
+            },
+            options: [{ optionId: "allow_once", name: "Yes", kind: "allow_once" }],
+          },
+          headers: [],
+        }),
+      );
+
+      const aliasedMessage = (yield* Queue.take(inboundRequests)) as { readonly id: string };
+      assert.notEqual(aliasedMessage.id, nonNumericRequestId);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(RequestPermissionRequest, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "session/request_permission",
+          params: {
+            sessionId: "session-1",
+            toolCall: {
+              toolCallId: "tool-2",
+              title: "Run command",
+            },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          },
+          headers: [],
+        }),
+      );
+
+      const numericMessage = (yield* Queue.take(inboundRequests)) as { readonly id: string };
+      assert.notEqual(numericMessage.id, aliasedMessage.id);
+
+      yield* transport.serverProtocol.send(0, {
+        _tag: "Exit",
+        requestId: numericMessage.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            outcome: {
+              outcome: "selected",
+              optionId: "allow",
+            },
+          },
+        },
+      });
+
+      const numericOutbound = yield* Queue.take(output);
+      assert.deepEqual(yield* decodeRequestPermissionResponse(numericOutbound), {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          outcome: {
+            outcome: "selected",
+            optionId: "allow",
+          },
+        },
+      });
+
+      yield* transport.serverProtocol.send(0, {
+        _tag: "Exit",
+        requestId: aliasedMessage.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            outcome: {
+              outcome: "selected",
+              optionId: "allow_once",
+            },
+          },
+        },
+      });
+
+      const aliasedOutbound = yield* Queue.take(output);
+      assert.deepEqual(yield* decodeRequestPermissionResponse(aliasedOutbound), {
+        jsonrpc: "2.0",
+        id: nonNumericRequestId,
+        result: {
+          outcome: {
+            outcome: "selected",
+            optionId: "allow_once",
+          },
+        },
+      });
+    }),
+  );
+
   it.effect("cleans up interrupted extension requests before a late response arrives", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();

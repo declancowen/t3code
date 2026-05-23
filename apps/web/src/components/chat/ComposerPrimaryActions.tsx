@@ -247,7 +247,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   return (
     <SendButton
-      compact={false}
+      compact={compact}
       disabled={sendDisabled}
       busy={sendBusy}
       ariaLabel={

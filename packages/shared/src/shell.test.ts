@@ -62,7 +62,7 @@ describe("readPathFromLoginShell", () => {
     expect(shell).toBe("/opt/homebrew/bin/fish");
     expect(args).toHaveLength(2);
     expect(args?.[0]).toBe("-ilc");
-    expect(args?.[1]).toContain("printenv PATH");
+    expect(args?.[1]).toContain("printenv PATH || true");
     expect(args?.[1]).toContain("__T3CODE_ENV_PATH_START__");
     expect(args?.[1]).toContain("__T3CODE_ENV_PATH_END__");
     expect(options).toEqual({ encoding: "utf8", timeout: 5000 });
@@ -125,6 +125,9 @@ describe("readEnvironmentFromLoginShell", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     });
     expect(execFile).toHaveBeenCalledTimes(1);
+    const firstCall = execFile.mock.calls[0];
+    expect(firstCall?.[1][1]).toContain("printenv PATH || true");
+    expect(firstCall?.[1][1]).toContain("printenv SSH_AUTH_SOCK || true");
   });
 
   it("omits environment variables that are missing or empty", () => {
