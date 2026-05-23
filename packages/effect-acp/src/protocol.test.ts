@@ -2,6 +2,7 @@ import * as Path from "effect/Path";
 import * as AcpError from "./errors.ts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -41,6 +42,11 @@ const RequestPermissionRequest = jsonRpcRequest(
 const RequestPermissionResponse = jsonRpcResponse(AcpSchema.RequestPermissionResponse);
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
+const ExtErrorResponse = Schema.Struct({
+  jsonrpc: Schema.Literal("2.0"),
+  id: Schema.Union([Schema.Number, Schema.String]),
+  error: AcpSchema.Error,
+});
 const decodeSessionCancelNotification = Schema.decodeEffect(
   Schema.fromJsonString(SessionCancelNotification),
 );
@@ -230,6 +236,44 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("surfaces generic extension response errors through the request error channel", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+
+      const response = yield* transport
+        .request("x/test", { hello: "world" })
+        .pipe(Effect.flip, Effect.forkScoped);
+      const outbound = yield* Queue.take(output);
+      const decodedRequest = yield* decodeExtRequest(outbound);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtErrorResponse, {
+          jsonrpc: "2.0",
+          id: decodedRequest.id,
+          error: {
+            code: -32603,
+            message: "Internal error",
+            data: "extension failed",
+          },
+        }),
+      );
+
+      const exit = yield* Fiber.await(response);
+      if (!Exit.isSuccess(exit)) {
+        assert.fail("Expected request to fail with a response error");
+      }
+      const error = exit.value;
+      assert.instanceOf(error, AcpError.AcpRequestError);
+      assert.equal(error.message, "Internal error");
+      assert.equal(error.data, "extension failed");
+    }),
+  );
+
   it.effect("preserves zero-valued ids for inbound core client requests", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
@@ -359,6 +403,116 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       assert.deepEqual(yield* decodeRequestPermissionResponse(outbound), {
         jsonrpc: "2.0",
         id: originalRequestId,
+        result: {
+          outcome: {
+            outcome: "selected",
+            optionId: "allow_once",
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("avoids alias collisions with native numeric inbound core request ids", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(["session/request_permission"]),
+      });
+      const inboundRequests = yield* Queue.unbounded<unknown>();
+      const nonNumericRequestId = "aee865ed-8360-495a-8007-d135a97a0b4a";
+
+      yield* transport.serverProtocol
+        .run((_clientId, message) => Queue.offer(inboundRequests, message).pipe(Effect.asVoid))
+        .pipe(Effect.forkScoped);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(RequestPermissionRequest, {
+          jsonrpc: "2.0",
+          id: nonNumericRequestId,
+          method: "session/request_permission",
+          params: {
+            sessionId: "session-1",
+            toolCall: {
+              toolCallId: "tool-1",
+              title: "Editing ComposerPrimaryActions.tsx",
+            },
+            options: [{ optionId: "allow_once", name: "Yes", kind: "allow_once" }],
+          },
+          headers: [],
+        }),
+      );
+
+      const aliasedMessage = (yield* Queue.take(inboundRequests)) as { readonly id: string };
+      assert.notEqual(aliasedMessage.id, nonNumericRequestId);
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(RequestPermissionRequest, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "session/request_permission",
+          params: {
+            sessionId: "session-1",
+            toolCall: {
+              toolCallId: "tool-2",
+              title: "Run command",
+            },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          },
+          headers: [],
+        }),
+      );
+
+      const numericMessage = (yield* Queue.take(inboundRequests)) as { readonly id: string };
+      assert.notEqual(numericMessage.id, aliasedMessage.id);
+
+      yield* transport.serverProtocol.send(0, {
+        _tag: "Exit",
+        requestId: numericMessage.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            outcome: {
+              outcome: "selected",
+              optionId: "allow",
+            },
+          },
+        },
+      });
+
+      const numericOutbound = yield* Queue.take(output);
+      assert.deepEqual(yield* decodeRequestPermissionResponse(numericOutbound), {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          outcome: {
+            outcome: "selected",
+            optionId: "allow",
+          },
+        },
+      });
+
+      yield* transport.serverProtocol.send(0, {
+        _tag: "Exit",
+        requestId: aliasedMessage.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            outcome: {
+              outcome: "selected",
+              optionId: "allow_once",
+            },
+          },
+        },
+      });
+
+      const aliasedOutbound = yield* Queue.take(output);
+      assert.deepEqual(yield* decodeRequestPermissionResponse(aliasedOutbound), {
+        jsonrpc: "2.0",
+        id: nonNumericRequestId,
         result: {
           outcome: {
             outcome: "selected",

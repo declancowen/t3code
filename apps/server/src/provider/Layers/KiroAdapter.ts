@@ -6,6 +6,12 @@ import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("kiro");
 const KIRO_ACTIVE_PROMPT_MESSAGE_METHOD = "_message/send";
+const SUPPORTED_KIRO_IMAGE_MIME_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 export interface KiroAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -23,6 +29,7 @@ export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapte
     ...(options?.nativeEventLogger ? { nativeEventLogger: options.nativeEventLogger } : {}),
     ...(options?.instanceId ? { instanceId: options.instanceId } : {}),
     activePromptMessageMethod: KIRO_ACTIVE_PROMPT_MESSAGE_METHOD,
+    supportedImageMimeTypes: SUPPORTED_KIRO_IMAGE_MIME_TYPES,
     stopSessionOnInterruptCancelUnsupported: true,
     sendMessageWhilePromptActive: ({ runtime, sessionId, content, contentBlocks }) =>
       runtime.request(KIRO_ACTIVE_PROMPT_MESSAGE_METHOD, {

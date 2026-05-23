@@ -14,6 +14,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { type ChatAttachment, ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import { makeStandardAcpAdapter } from "./StandardAcpAdapter.ts";
 
@@ -26,6 +27,7 @@ function makeFakeAcpRuntime(input: {
   readonly cancel?: Effect.Effect<void, AcpRequestError>;
   readonly prompt?: () => Effect.Effect<EffectAcpSchema.PromptResponse, unknown>;
   readonly request?: (method: string, payload: unknown) => Effect.Effect<unknown, unknown>;
+  readonly supportsImagePrompts?: boolean;
 }): AcpSessionRuntimeShape {
   const ignoreHandler = () => Effect.void;
   return {
@@ -49,7 +51,12 @@ function makeFakeAcpRuntime(input: {
         sessionId: "fake-session",
         initializeResult: {
           protocolVersion: 1,
-          agentCapabilities: { loadSession: true },
+          agentCapabilities: {
+            loadSession: true,
+            ...(input.supportsImagePrompts === false
+              ? {}
+              : { promptCapabilities: { image: true } }),
+          },
         } as EffectAcpSchema.InitializeResponse,
         sessionSetupResult: {
           sessionId: "fake-session",
@@ -119,6 +126,92 @@ it.effect("keeps interrupted ACP turns active until session/prompt resolves", ()
     const result = yield* Fiber.join(sendTurnFiber);
 
     assert.equal(result.threadId, threadId);
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("rejects image attachments when the ACP session does not advertise image prompts", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("cursor");
+    const threadId = ThreadId.make("standard-acp-image-capability-required");
+    const cancelCalled = yield* Deferred.make<void>();
+    const runtime = makeFakeAcpRuntime({
+      cancelCalled,
+      supportsImagePrompts: false,
+    });
+    const attachment: ChatAttachment = {
+      type: "image",
+      id: "image-capability-required",
+      name: "image-capability-required.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+    };
+
+    const adapter = yield* makeStandardAcpAdapter({
+      provider,
+      runtimeLabel: "Fake ACP",
+      makeRuntime: () => Effect.succeed(runtime),
+    });
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+
+    const error = yield* adapter
+      .sendTurn({
+        threadId,
+        input: "inspect",
+        attachments: [attachment],
+      })
+      .pipe(Effect.flip, Effect.timeout("1 second"));
+
+    assert.instanceOf(error, ProviderAdapterValidationError);
+    assert.equal(error.issue, "Fake ACP session does not support image attachments.");
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("rejects image attachments outside a provider image MIME allowlist", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("kiro");
+    const threadId = ThreadId.make("standard-acp-image-mime-allowlist");
+    const cancelCalled = yield* Deferred.make<void>();
+    const runtime = makeFakeAcpRuntime({ cancelCalled });
+    const attachment: ChatAttachment = {
+      type: "image",
+      id: "image-mime-allowlist",
+      name: "image-mime-allowlist.svg",
+      mimeType: "image/svg+xml",
+      sizeBytes: 1,
+    };
+
+    const adapter = yield* makeStandardAcpAdapter({
+      provider,
+      runtimeLabel: "Kiro",
+      supportedImageMimeTypes: new Set(["image/png"]),
+      makeRuntime: () => Effect.succeed(runtime),
+    });
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+
+    const error = yield* adapter
+      .sendTurn({
+        threadId,
+        input: "inspect",
+        attachments: [attachment],
+      })
+      .pipe(Effect.flip, Effect.timeout("1 second"));
+
+    assert.instanceOf(error, ProviderAdapterRequestError);
+    assert.equal(error.detail, "Unsupported Kiro image attachment type 'image/svg+xml'.");
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );

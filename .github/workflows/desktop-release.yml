@@ -24,7 +24,7 @@ jobs:
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
       release_name: ${{ steps.release_meta.outputs.release_name }}
-      ref: ${{ github.sha }}
+      ref: ${{ steps.release_meta.outputs.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -65,9 +65,17 @@ jobs:
             exit 1
           fi
 
+          tag="v$version"
+          release_ref="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+          if [[ -z "$release_ref" ]]; then
+            echo "Release tag $tag does not exist. Create the tag before running the desktop release workflow." >&2
+            exit 1
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "release_name=T3 Code v$version" >> "$GITHUB_OUTPUT"
+          echo "ref=$release_ref" >> "$GITHUB_OUTPUT"
 
       - name: Format check
         run: bun run fmt:check

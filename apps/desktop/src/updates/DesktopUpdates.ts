@@ -355,6 +355,18 @@ const make = Effect.gen(function* () {
     );
   }).pipe(Effect.withSpan("desktop.updates.downloadAvailableUpdate"));
 
+  const restartBackendAfterInstallFailure = Effect.fn(
+    "desktop.updates.restartBackendAfterInstallFailure",
+  )(function* () {
+    yield* backendManager.start.pipe(
+      Effect.catchCause((cause) =>
+        logUpdaterError("failed to restart desktop backend after update install failure", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  });
+
   const installDownloadedUpdate = Effect.gen(function* () {
     const state = yield* Ref.get(updateStateRef);
     if (
@@ -393,13 +405,7 @@ const make = Effect.gen(function* () {
             reduceDesktopUpdateStateOnInstallFailure(current, error.message),
           );
           yield* Ref.set(desktopState.quitting, false);
-          yield* backendManager.start.pipe(
-            Effect.catchCause((cause) =>
-              logUpdaterError("failed to restart desktop backend after update install failure", {
-                cause: Cause.pretty(cause),
-              }),
-            ),
-          );
+          yield* restartBackendAfterInstallFailure();
           yield* logUpdaterError("failed to install update", { message: error.message });
           return { accepted: true, completed: false };
         }),
@@ -475,6 +481,7 @@ const make = Effect.gen(function* () {
       yield* Ref.set(updateInstallInFlightRef, false);
       yield* Ref.set(desktopState.quitting, false);
       yield* updateState((current) => reduceDesktopUpdateStateOnInstallFailure(current, message));
+      yield* restartBackendAfterInstallFailure();
       yield* logUpdaterError("updater error", { message });
       return;
     }
