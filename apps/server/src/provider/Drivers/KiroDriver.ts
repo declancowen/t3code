@@ -8,6 +8,7 @@
  * @module provider/Drivers/KiroDriver
  */
 import { KiroSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -60,7 +61,8 @@ export type KiroDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | Crypto.Crypto;
 
 const withInstanceIdentity =
   (input: {

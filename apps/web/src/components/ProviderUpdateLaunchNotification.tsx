@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { DownloadIcon } from "lucide-react";
+import { CircleCheckIcon, DownloadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 
@@ -68,6 +68,11 @@ function updateProviderUpdateToast(input: {
       timeout: 0,
       data: {
         hideCopyButton: true,
+        ...(input.view.type === "success"
+          ? {
+              leadingIcon: <CircleCheckIcon aria-hidden className="size-4 text-primary" />,
+            }
+          : {}),
         ...(input.view.dismissAfterVisibleMs !== undefined
           ? { dismissAfterVisibleMs: input.view.dismissAfterVisibleMs }
           : {}),

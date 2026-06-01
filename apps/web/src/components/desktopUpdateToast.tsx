@@ -6,9 +6,7 @@ export function createDesktopUpdateDownloadedToast() {
     title: "Update downloaded",
     description: "Restart the app from the update button to install it.",
     data: {
-      leadingIcon: (
-        <CircleCheckIcon aria-hidden className="size-4" style={{ color: "var(--primary)" }} />
-      ),
+      leadingIcon: <CircleCheckIcon aria-hidden className="size-4 text-primary" />,
     },
   };
 }

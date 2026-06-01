@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
+import { CircleCheckIcon } from "lucide-react";
 
 import { type SlowRpcAckRequest, useSlowRpcAckRequests } from "../rpc/requestLatencyState";
 import {
@@ -348,6 +349,7 @@ export function WebSocketConnectionCoordinator() {
         data: {
           dismissAfterVisibleMs: 8_000,
           hideCopyButton: true,
+          leadingIcon: <CircleCheckIcon aria-hidden className="size-4 text-primary" />,
         },
       };
 
