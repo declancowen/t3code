@@ -6,13 +6,15 @@
 | -------------- | ---------------------------------------- |
 | **Repository** | `declancowen/t3code`                     |
 | **Remote**     | `origin`                                 |
-| **Branch**     | `merge-upstream-main-check`              |
+| **Branch**     | `main`                                   |
 | **Stack**      | TypeScript, Effect, React/Vite, Electron |
 
 ## Scope
 
 - `apps/server/src/provider/acp/StandardAcpAdapter.ts` — ACP prompt lifecycle and active-prompt steering.
 - `apps/server/src/provider/Layers/KiroAdapter.ts` — Kiro `_message/send` payload mapping.
+- `apps/server/src/provider/Layers/KiroProvider.ts` — Kiro provider status and skill metadata publication.
+- `apps/server/src/provider/CodexSkillBridge.ts`, `apps/server/src/provider/CodexSkillBridge.test.ts` — Codex-style skill discovery and Kiro prompt augmentation.
 - `packages/effect-acp/src/protocol.ts` — ACP JSON-RPC transport compatibility for provider-originated requests.
 - `packages/effect-acp/src/client.test.ts`, `packages/effect-acp/src/protocol.test.ts` — ACP transport error-channel regression coverage.
 - `apps/server/src/provider/acp/AcpAdapterSupport.ts`, `apps/server/src/provider/acp/AcpRuntimeModel.ts` — ACP permission outcome mapping and tool-call classification.
@@ -25,6 +27,8 @@
 
 - ACP active-turn lifecycle ownership and duplicate `session/prompt` prevention.
 - Kiro cancel behavior because Kiro currently rejects `session/cancel`.
+- Codex skill root discovery, system-skill scoping, plugin skill namespacing, and selected-skill prompt injection for Kiro.
+- Kiro plan/default mode prompt augmentation without ACP developer-role support.
 - ACP permission requests with provider-owned UUID request IDs and provider-owned option IDs.
 - Active-prompt steering payload compatibility for text and image attachments.
 - ACP JSON-RPC response error normalization and provider error data surfacing.
@@ -37,11 +41,69 @@
 | Field                 | Value                |
 | --------------------- | -------------------- |
 | **Review started**    | 2026-05-20           |
-| **Last reviewed**     | 2026-05-23 21:24 BST |
-| **Total turns**       | 9                    |
+| **Last reviewed**     | 2026-06-04 06:59 BST |
+| **Total turns**       | 10                   |
 | **Open findings**     | 0                    |
-| **Resolved findings** | 6                    |
+| **Resolved findings** | 8                    |
 | **Accepted findings** | 0                    |
+
+## Turn 10 — 2026-06-04 06:59 BST
+
+| Field           | Value        |
+| --------------- | ------------ |
+| **Commit**      | `8b7b6eba`   |
+| **IDE / Agent** | Codex        |
+
+**Summary:** Reviewed the scoped Kiro change that exposes Codex-style skills, injects selected skill bodies, and prepends Codex plan/default collaboration instructions before Kiro ACP turns.
+**Outcome:** No open findings in the scoped Kiro/Codex-skill diff. Full working-tree review is partial because the branch contains unrelated deletions and divergent untracked files outside this task.
+**Risk score:** Medium — provider prompt construction and skill discovery affect Kiro turn behavior, but the change is isolated to Kiro plus a dedicated bridge module with focused tests.
+**Change archetypes:** provider prompt augmentation, filesystem skill discovery, plugin metadata compatibility, collaboration-mode prompt steering, duplicate cleanup.
+**Intended change:** Let Kiro models use Codex skills and plan/build mode similarly to upstream Codex, then remove true duplicate files.
+**Intent vs actual:** The implementation now mirrors the upstream shape closely enough for Kiro: Codex plan/default instructions are prepended for Kiro turns, explicitly mentioned skills render as `<skill>` fragments with `name`, `path`, and raw `SKILL.md` contents, Kiro provider status publishes discovered skills, system skills stay system-scoped, and plugin-backed skill names use the nearest plugin manifest namespace.
+**Confidence:** Medium-high for the scoped behavior. The remaining uncertainty is inherent to Kiro ACP not exposing a developer-role message, so collaboration-mode instructions are injected as prompt text rather than as a separate developer fragment.
+**Coverage note:** Focused server tests cover roots, metadata, system scoping, plugin namespacing, upstream-shaped skill fragments, and Kiro prompt augmentation.
+**Finding triage:** Two review findings were found and fixed in-turn: `.system` skills were initially reachable through the user root, and plugin skills initially lacked upstream-style namespace prefixes. No open findings remain.
+**Static/analyzer evidence:** `bun lint` exits 0 with 9 existing web warnings unrelated to this diff. Duplicate hash checks found no remaining byte-identical untracked duplicates after cleanup.
+**Architecture impact:** Kiro-specific behavior stays in `KiroAdapter`/`KiroProvider`; shared server contracts are reused without schema changes. Skill parsing/discovery lives in a focused bridge module instead of being duplicated in Kiro provider code.
+**Deep-review evidence:** Dual pass completed. Correctness/safety found the two scoping/namespacing issues and they were fixed with regression tests. Maintainability/structure passed after keeping discovery/prompt logic in one bridge module and removing the new adapter lint warning.
+**Bug classes / invariants checked:** system skills are not downgraded to user scope; plugin skills resolve by namespaced `$plugin:skill` names; selected skill bodies match upstream `<skill>` body shape; Kiro turn cwd drives project-skill lookup; stop/stopAll clear the per-thread cwd cache; byte-identical duplicates are removed only when content hashes match.
+**Branch totality:** Scoped to `CodexSkillBridge`, `CodexSkillBridge.test`, `KiroAdapter`, `KiroProvider`, and duplicate-removal effects. Unrelated workflow/test/web deletions and divergent ` 2` files were not reviewed as part of this turn.
+**Sibling closure:** Checked upstream Codex model fallback, collaboration-mode preset/injection, skill injection/rendering, skill loader root and plugin namespace behavior, existing Codex provider skill status parsing, `CodexSessionRuntime` collaboration-mode wiring, and the shared ACP adapter send path.
+**Remediation impact surface:** Affects Kiro provider status/autocomplete and Kiro turn prompt payloads. Codex provider behavior is unchanged except for sharing the existing developer-instruction constants.
+**Residual risk / unknowns:** Kiro receives collaboration instructions as prompt text because ACP does not provide a developer-role channel here. Provider status skill discovery uses server `process.cwd()` like the Codex provider; turn-time injection uses the active session cwd.
+
+### Validation
+
+- `bun run --cwd apps/server test src/provider/CodexSkillBridge.test.ts src/provider/Layers/KiroProvider.test.ts` — passed, 8 tests.
+- `bun fmt` — passed.
+- `bun lint` — passed with 9 existing warnings outside the scoped diff.
+- `bun typecheck` — failed in `@t3tools/web` because `apps/web/src/rpc/wsConnectionState.ts` is already deleted and divergent untracked ` 2` files are included.
+- `bun run --cwd apps/server typecheck 2>&1 | rg "CodexSkillBridge|KiroAdapter|KiroProvider"` — no diagnostics in changed files; package typecheck itself remains blocked by unrelated server ` 2` files.
+- `git diff --check -- apps/server/src/provider/CodexSkillBridge.ts apps/server/src/provider/CodexSkillBridge.test.ts apps/server/src/provider/Layers/KiroAdapter.ts apps/server/src/provider/Layers/KiroProvider.ts` — passed.
+- Untracked duplicate hash checks against untracked and tracked existing files — passed; no byte-identical duplicates remain.
+
+### Branch-totality proof
+
+- **Non-delta files/systems re-read:** diff-review gates, all-clear antipatterns, upstream Codex `model_info`, collaboration-mode preset/instruction files, core-skills loader/injection/instruction files, `CodexProvider`, `CodexSessionRuntime`, `StandardAcpAdapter`, and `ProviderCommandReactor`.
+- **Prior open findings rechecked:** No open findings from Turn 9.
+- **Prior resolved/adjacent areas revalidated:** Kiro active-prompt and stop behavior remain in the existing adapter; this turn only augments the input sent through that adapter.
+- **Hotspots or sibling paths revisited:** Codex provider skill status contract, plugin namespace resolution, system skill root handling, session cwd tracking, and duplicate-file cleanup.
+- **Dependency/adjacent surfaces revalidated:** Web composer already consumes `ServerProvider.skills`, so Kiro status publishing uses the existing contract without UI changes.
+- **Why this is enough:** The weakest invariant was upstream compatibility for skill selection. The review compared upstream behavior, fixed the two drift points, and added direct regression coverage.
+
+### Challenger pass
+
+Not required for Medium risk. The most plausible remaining issue is a future Kiro protocol surface that supports developer-role context separately; until then the prompt-text injection is the conservative bridge.
+
+### Resolved / Carried / New findings
+
+- **KCS-001 — Resolved:** `$CODEX_HOME/skills/.system` could be discovered through the user root and misclassified as `user`. Fixed by skipping dot-directory entries and scanning `.system` only through the explicit system root.
+- **KCS-002 — Resolved:** Plugin-backed skills were initially discovered with unqualified names like `gh-fix-ci`, so upstream-style mentions such as `$github:gh-fix-ci` would not inject. Fixed by walking ancestors for `.codex-plugin/plugin.json` / `.claude-plugin/plugin.json` and prefixing `pluginName:skillName`.
+
+### Recommendations
+
+1. **Fix first:** none in the scoped diff.
+2. **Then address:** restore or intentionally resolve the unrelated deleted `wsConnectionState.ts` and remaining divergent ` 2` files so full `bun typecheck` can pass again.
 
 ## Turn 9 — 2026-05-23 21:24 BST
 
