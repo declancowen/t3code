@@ -49,10 +49,10 @@
 
 ## Turn 10 — 2026-06-04 06:59 BST
 
-| Field           | Value        |
-| --------------- | ------------ |
-| **Commit**      | `8b7b6eba`   |
-| **IDE / Agent** | Codex        |
+| Field           | Value      |
+| --------------- | ---------- |
+| **Commit**      | `8b7b6eba` |
+| **IDE / Agent** | Codex      |
 
 **Summary:** Reviewed the scoped Kiro change that exposes Codex-style skills, injects selected skill bodies, and prepends Codex plan/default collaboration instructions before Kiro ACP turns.
 **Outcome:** No open findings in the scoped Kiro/Codex-skill diff. Full working-tree review is partial because the branch contains unrelated deletions and divergent untracked files outside this task.
