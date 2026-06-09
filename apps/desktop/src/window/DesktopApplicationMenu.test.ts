@@ -4,7 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 import type * as Electron from "electron";
 

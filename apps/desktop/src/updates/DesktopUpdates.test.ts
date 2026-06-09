@@ -9,7 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 vi.mock("electron", () => ({
   app: { focus: () => undefined },
