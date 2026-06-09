@@ -5,7 +5,7 @@ import {
   TurnId,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveCompletionDividerBeforeEntryId,
@@ -1310,6 +1310,35 @@ describe("deriveTimelineEntries", () => {
         implementationThreadId: null,
       },
     });
+  });
+
+  it("orders a user prompt before a same-timestamp assistant response", () => {
+    const sameTs = "2026-02-23T00:00:01.000Z";
+    const entries = deriveTimelineEntries(
+      [
+        // Assistant message is first in input order (as when an optimistic user
+        // prompt is appended after server messages) and shares the millisecond.
+        {
+          id: MessageId.make("assistant-fast"),
+          role: "assistant",
+          text: "response",
+          createdAt: sameTs,
+          streaming: true,
+        },
+        {
+          id: MessageId.make("user-prompt"),
+          role: "user",
+          text: "my prompt",
+          createdAt: sameTs,
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+    expect(
+      entries.map((entry) => (entry.kind === "message" ? entry.message.role : entry.kind)),
+    ).toEqual(["user", "assistant"]);
   });
 
   it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {

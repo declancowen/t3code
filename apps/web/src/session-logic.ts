@@ -1191,9 +1191,22 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) => {
+    const byCreatedAt = a.createdAt.localeCompare(b.createdAt);
+    if (byCreatedAt !== 0) {
+      return byCreatedAt;
+    }
+    // Same-timestamp tiebreak (e.g. an optimistic user prompt and a fast
+    // assistant response stamped in the same millisecond): a user prompt must
+    // never render below the response it caused. All other ties keep their
+    // existing (stable) input order.
+    return timelineEntryCausalRank(a) - timelineEntryCausalRank(b);
+  });
+}
+
+/** On a timestamp tie, user prompts sort before assistant/plan/work entries. */
+function timelineEntryCausalRank(entry: TimelineEntry): number {
+  return entry.kind === "message" && entry.message.role === "user" ? 0 : 1;
 }
 
 export function deriveCompletionDividerBeforeEntryId(

@@ -3,6 +3,7 @@ import type {
   ModelCapabilities,
   ServerProviderAuth,
   ServerProviderModel,
+  ServerProviderSkill,
   ServerProviderState,
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
@@ -26,6 +27,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { makeKiroAcpRuntime } from "../acp/KiroAcpSupport.ts";
+import { discoverCodexSkills } from "../CodexSkillBridge.ts";
 
 const PROVIDER = ProviderDriverKind.make("kiro");
 const KIRO_PRESENTATION = {
@@ -357,6 +359,7 @@ function buildKiroProviderSnapshot(input: {
   readonly auth: ServerProviderAuth;
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly discoveredModels?: ReadonlyArray<ServerProviderModel>;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
   readonly message?: string;
   readonly discoveryWarning?: string;
 }): ServerProviderDraft {
@@ -376,6 +379,7 @@ function buildKiroProviderSnapshot(input: {
       input.kiroSettings.customModels,
       EMPTY_CAPABILITIES,
     ),
+    skills: input.skills ?? [],
     probe: {
       installed: true,
       version: input.version,
@@ -514,6 +518,7 @@ export const checkKiroProviderStatus = Effect.fn("checkKiroProviderStatus")(func
   const version = parseGenericCliVersion(
     `${versionProbe.success.value.stdout}\n${versionProbe.success.value.stderr}`,
   );
+  const skills = yield* discoverCodexSkills({ cwd: process.cwd(), environment });
   const whoamiProbe = yield* runKiroCommand(
     kiroSettings,
     ["whoami", "--format", "json"],
@@ -582,6 +587,7 @@ export const checkKiroProviderStatus = Effect.fn("checkKiroProviderStatus")(func
     version,
     auth: parsedAuth.auth,
     status: parsedAuth.status,
+    skills,
     ...(parsedAuth.message ? { message: parsedAuth.message } : {}),
     discoveredModels,
     ...(discoveryWarning ? { discoveryWarning } : {}),
