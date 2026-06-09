@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import {
   type ProviderInteractionMode,
   type ProviderSendTurnInput,

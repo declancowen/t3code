@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
