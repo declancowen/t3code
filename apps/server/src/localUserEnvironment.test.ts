@@ -1,5 +1,5 @@
 import * as NodeOS from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { resolveLocalUserHome, withLocalUserHome } from "./localUserEnvironment.ts";
 

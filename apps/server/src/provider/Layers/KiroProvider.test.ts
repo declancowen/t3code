@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
 import { parseKiroListModelsOutput } from "./KiroProvider.ts";
