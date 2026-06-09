@@ -77,6 +77,16 @@ export interface StandardAcpAdapterOptions {
   readonly activePromptMessageMethod?: string;
   readonly supportedImageMimeTypes?: ReadonlySet<string>;
   readonly stopSessionOnInterruptCancelUnsupported?: boolean;
+  /**
+   * When the underlying agent's `prompt` call fails after a turn has started,
+   * emit a terminal `turn.completed` event with `state: "failed"` before
+   * propagating the error. Without this, a started turn that errors mid-prompt
+   * (e.g. an agent that rejects an image or a mid-turn steering message) never
+   * receives a terminal lifecycle event, leaving consumers stuck in a
+   * perpetual "running" state. Opt-in so providers whose CLIs do not surface
+   * such failures (e.g. Cursor) keep their existing behavior unchanged.
+   */
+  readonly emitTurnFailedOnError?: boolean;
   readonly sendMessageWhilePromptActive?: (input: {
     readonly runtime: AcpSessionRuntimeShape;
     readonly sessionId: string;
@@ -344,6 +354,27 @@ export function makeStandardAcpAdapter(
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+
+    const offerTurnFailedEvent = (threadId: ThreadId, turnId: TurnId, error: ProviderAdapterError) =>
+      Effect.gen(function* () {
+        const detail = (error as { readonly detail?: unknown }).detail;
+        const candidate =
+          typeof detail === "string" && detail.trim().length > 0
+            ? detail
+            : (error as { readonly message?: unknown }).message;
+        const errorMessage = typeof candidate === "string" ? candidate.trim() : "";
+        yield* offerRuntimeEvent({
+          type: "turn.completed",
+          ...(yield* makeEventStamp()),
+          provider,
+          threadId,
+          turnId,
+          payload: {
+            state: "failed",
+            ...(errorMessage.length > 0 ? { errorMessage } : {}),
+          },
+        });
+      });
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -912,6 +943,11 @@ export function makeStandardAcpAdapter(
           .pipe(
             Effect.mapError((error) =>
               mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
+            ),
+            Effect.tapError((error) =>
+              options.emitTurnFailedOnError
+                ? offerTurnFailedEvent(input.threadId, turnId, error)
+                : Effect.void,
             ),
             Effect.ensuring(
               Effect.sync(() => {

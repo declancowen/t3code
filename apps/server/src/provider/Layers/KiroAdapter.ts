@@ -38,6 +38,10 @@ export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapte
     activePromptMessageMethod: KIRO_ACTIVE_PROMPT_MESSAGE_METHOD,
     supportedImageMimeTypes: SUPPORTED_KIRO_IMAGE_MIME_TYPES,
     stopSessionOnInterruptCancelUnsupported: true,
+    // Kiro's CLI can fail a started prompt (e.g. on image attachments or a
+    // mid-turn _message/send) without ever sending a turn-stop. Emit a terminal
+    // turn.completed{failed} so the UI does not stay stuck "running".
+    emitTurnFailedOnError: true,
     sendMessageWhilePromptActive: ({ runtime, sessionId, content, contentBlocks }) =>
       runtime.request(KIRO_ACTIVE_PROMPT_MESSAGE_METHOD, {
         sessionId,
