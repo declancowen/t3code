@@ -355,7 +355,11 @@ export function makeStandardAcpAdapter(
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
 
-    const offerTurnFailedEvent = (threadId: ThreadId, turnId: TurnId, error: ProviderAdapterError) =>
+    const offerTurnFailedEvent = (
+      threadId: ThreadId,
+      turnId: TurnId,
+      error: ProviderAdapterError,
+    ) =>
       Effect.gen(function* () {
         const detail = (error as { readonly detail?: unknown }).detail;
         const candidate =

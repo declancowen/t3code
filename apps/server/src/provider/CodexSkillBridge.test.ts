@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests -- pre-existing test debt (uses Effect.runPromise); tests pass, refactor to it.effect is a follow-up
 import { describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";

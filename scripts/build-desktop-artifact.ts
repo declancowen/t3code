@@ -493,7 +493,9 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
     const iconIcnsPath = path.join(stageResourcesDir, "icon.icns");
 
     yield* runCommand(
-      ChildProcess.make({})`sips -m ${MACOS_SRGB_PROFILE_PATH} -z 512 512 ${sourcePng} --out ${iconPngPath}`,
+      ChildProcess.make(
+        {},
+      )`sips -m ${MACOS_SRGB_PROFILE_PATH} -z 512 512 ${sourcePng} --out ${iconPngPath}`,
       { label: "sips mac icon", verbose },
     );
 
