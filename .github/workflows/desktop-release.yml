@@ -75,16 +75,16 @@ jobs:
           echo "ref=$release_ref" >> "$GITHUB_OUTPUT"
 
       - name: Format check
-        run: pnpm run fmt:check
+        run: vp run fmt:check
 
       - name: Lint
-        run: pnpm run lint
+        run: vp run lint
 
       - name: Typecheck
-        run: pnpm run typecheck
+        run: vp run typecheck
 
       - name: Test
-        run: pnpm run test
+        run: vp run test
 
   build:
     name: Build ${{ matrix.label }}
@@ -268,7 +268,7 @@ jobs:
             echo "Signing disabled for ${{ matrix.platform }}."
           fi
 
-          pnpm run dist:desktop:artifact -- "${args[@]}"
+          vp run dist:desktop:artifact -- "${args[@]}"
 
       - name: Collect release assets
         shell: bash
