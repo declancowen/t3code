@@ -132,6 +132,10 @@ jobs:
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
+      - name: Install ImageMagick (Linux desktop icons)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
       - name: Install Spectre-mitigated MSVC libs
         if: matrix.platform == 'win'
         shell: pwsh
