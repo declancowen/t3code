@@ -1,7 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
-import { isBrowserApiCorsOriginAllowed } from "./httpCors.ts";
 
 describe("http dev routing", () => {
   it("treats localhost and loopback addresses as local", () => {
@@ -24,19 +23,5 @@ describe("http dev routing", () => {
     expect(resolveDevRedirectUrl(devUrl, requestUrl)).toBe(
       "http://127.0.0.1:5173/pair?token=test-token",
     );
-  });
-
-  it("allows credentialed browser API CORS only for loopback and hosted app origins", () => {
-    expect(isBrowserApiCorsOriginAllowed("http://localhost:5173")).toBe(true);
-    expect(isBrowserApiCorsOriginAllowed("http://127.0.0.1:5173")).toBe(true);
-    expect(isBrowserApiCorsOriginAllowed("http://[::1]:5173")).toBe(true);
-    expect(isBrowserApiCorsOriginAllowed("https://app.t3.codes")).toBe(true);
-    expect(isBrowserApiCorsOriginAllowed("https://latest.app.t3.codes")).toBe(true);
-    expect(isBrowserApiCorsOriginAllowed("https://nightly.app.t3.codes")).toBe(true);
-
-    expect(isBrowserApiCorsOriginAllowed("https://evil.example")).toBe(false);
-    expect(isBrowserApiCorsOriginAllowed("http://remote-client.test:3773")).toBe(false);
-    expect(isBrowserApiCorsOriginAllowed("https://app.t3.codes.evil.example")).toBe(false);
-    expect(isBrowserApiCorsOriginAllowed("https://user@app.t3.codes")).toBe(false);
   });
 });

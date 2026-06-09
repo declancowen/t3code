@@ -3,6 +3,7 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   BotIcon,
+  CloudIcon,
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
@@ -20,6 +21,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../ui/sidebar";
+import { Badge } from "../ui/badge";
+import { hasCloudPublicConfig } from "../../cloud/publicConfig";
 
 export type SettingsSectionPath =
   | "/settings/general"
@@ -27,6 +30,7 @@ export type SettingsSectionPath =
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/source-control"
+  | "/settings/cloud"
   | "/settings/connections"
   | "/settings/archived";
 
@@ -34,12 +38,14 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;
   to: SettingsSectionPath;
   icon: ComponentType<{ className?: string }>;
+  badgeLabel?: string;
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
+  { label: "T3 Cloud", to: "/settings/cloud", icon: CloudIcon, badgeLabel: "Private Beta" },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
@@ -73,7 +79,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarContent className="overflow-x-hidden">
         <SidebarGroup className="px-2 py-3">
           <SidebarMenu>
-            {SETTINGS_NAV_ITEMS.map((item) => {
+            {SETTINGS_NAV_ITEMS.filter(
+              (item) => item.to !== "/settings/cloud" || hasCloudPublicConfig(),
+            ).map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.to;
               return (
@@ -96,6 +104,11 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       }
                     />
                     <span className="truncate">{item.label}</span>
+                    {item.badgeLabel ? (
+                      <Badge variant="warning" size="sm" className="ml-auto">
+                        {item.badgeLabel}
+                      </Badge>
+                    ) : null}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               );
