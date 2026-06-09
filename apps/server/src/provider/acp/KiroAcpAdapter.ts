@@ -63,6 +63,11 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const STANDARD_ACP_RESUME_VERSION = 1 as const;
+// Grace period after forwarding `session/cancel` before force-terminating the
+// session. Graceful cancel of a streaming turn resolves in ~1ms, so this only
+// fires when the agent is genuinely stuck (e.g. blocked inside a tool/command
+// the CLI will not abort), guaranteeing that stop always works.
+const CANCEL_FORCE_TERMINATE_DELAY = "5 seconds";
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -74,24 +79,16 @@ export interface KiroAcpAdapterOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
-  readonly activePromptMessageMethod?: string;
   readonly stopSessionOnInterruptCancelUnsupported?: boolean;
   /**
    * When the underlying agent's `prompt` call fails after a turn has started,
    * emit a terminal `turn.completed` event with `state: "failed"` before
    * propagating the error. Without this, a started turn that errors mid-prompt
-   * (e.g. an agent that rejects an image or a mid-turn steering message) never
-   * receives a terminal lifecycle event, leaving consumers stuck in a
-   * perpetual "running" state. Opt-in so providers whose CLIs do not surface
-   * such failures (e.g. Cursor) keep their existing behavior unchanged.
+   * (e.g. an agent that rejects an image) never receives a terminal lifecycle
+   * event, leaving consumers stuck in a perpetual "running" state. Opt-in so
+   * providers whose CLIs do not surface such failures keep prior behavior.
    */
   readonly emitTurnFailedOnError?: boolean;
-  readonly sendMessageWhilePromptActive?: (input: {
-    readonly runtime: AcpSessionRuntimeShape;
-    readonly sessionId: string;
-    readonly content: string;
-    readonly contentBlocks: ReadonlyArray<EffectAcpSchema.ContentBlock>;
-  }) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
   readonly makeRuntime: (
     input: {
       readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
@@ -130,6 +127,11 @@ interface StandardAcpSessionContext {
       }
     | undefined;
   stopped: boolean;
+  // Serializes `session/prompt` calls for this session so mid-turn follow-ups run
+  // as ordered real prompts (kiro-cli runs one prompt at a time).
+  readonly promptLock: Semaphore.Semaphore;
+  // Bumped by interruptTurn; turns queued before the bump are discarded.
+  generation: number;
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -713,6 +715,7 @@ export function makeKiroAcpAdapter(
             updatedAt: now,
           };
 
+          const promptLock = yield* Semaphore.make(1);
           ctx = {
             threadId: input.threadId,
             session,
@@ -728,6 +731,8 @@ export function makeKiroAcpAdapter(
             activeTurnId: undefined,
             activePrompt: undefined,
             stopped: false,
+            promptLock,
+            generation: 0,
           };
 
           const nf = yield* Stream.runDrain(
@@ -854,74 +859,50 @@ export function makeKiroAcpAdapter(
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        // Phase 1 — serialized per thread: classify the message and mutate the
-        // active-prompt/turn state atomically. Holding the thread lock here closes
-        // the TOCTOU where two near-simultaneous messages could both be classified
-        // against stale `activePrompt` state (dropping a follow-up or letting it
-        // supersede the previous turn). The long-running prompt await happens in
-        // phase 2 OUTSIDE the lock, so interrupt/stop are never blocked behind it.
-        const phase = yield* withThreadLock(
-          input.threadId,
+        const ctx = yield* requireSession(input.threadId);
+        const turnId = TurnId.make(yield* randomUUIDv4);
+        // Capture the generation at submit time. An explicit interrupt bumps
+        // ctx.generation, so any turns still queued behind the active prompt are
+        // discarded instead of firing after the user pressed stop.
+        const generationAtSubmit = ctx.generation;
+
+        // Serialize every turn on a per-session prompt lock. kiro-cli runs one
+        // prompt per session at a time, and its ACP `_message/send` does NOT inject
+        // into a running turn (it is accepted and then ignored), so we never use it.
+        // Instead each message — including mid-turn follow-ups and image
+        // attachments — waits its turn here and is submitted as a real
+        // `session/prompt`, in arrival order, with nothing dropped. The prompt await
+        // holds the permit; interrupt does not take this lock, so stop is never
+        // blocked behind a running turn.
+        return yield* ctx.promptLock.withPermit(
           Effect.gen(function* () {
-            const ctx = yield* requireSession(input.threadId);
-            const activePromptTurnId =
-              ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
-            if (activePromptTurnId && options.sendMessageWhilePromptActive) {
-              const method = options.activePromptMessageMethod ?? "session/message";
-              const contentBlocks = yield* buildPromptContentBlocks(
-                input,
-                method,
-                ctx.supportsImagePrompts,
-              );
-              const content = contentBlocks
-                .filter(
-                  (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
-                    block.type === "text",
-                )
-                .map((block) => block.text)
-                .join("\n")
-                .trim();
-              yield* options
-                .sendMessageWhilePromptActive({
-                  runtime: ctx.acp,
-                  sessionId: ctx.acpSessionId,
-                  content,
-                  contentBlocks,
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    mapAcpToAdapterError(provider, input.threadId, method, error),
-                  ),
-                );
-
-              ctx.activePrompt = { turnId: activePromptTurnId };
-              ctx.activeTurnId = activePromptTurnId;
-              ctx.session = {
-                ...ctx.session,
-                activeTurnId: activePromptTurnId,
-                updatedAt: yield* nowIso,
-              };
-
+            if (ctx.stopped || ctx.generation !== generationAtSubmit) {
+              // Superseded by an explicit stop while queued: emit a terminal
+              // cancelled lifecycle so the UI does not show it perpetually
+              // "running", and never contact the CLI.
               yield* offerRuntimeEvent({
                 type: "turn.started",
                 ...(yield* makeEventStamp()),
                 provider,
                 threadId: input.threadId,
-                turnId: activePromptTurnId,
+                turnId,
                 payload: {},
               });
-
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider,
+                threadId: input.threadId,
+                turnId,
+                payload: { state: "cancelled", stopReason: "cancelled" },
+              });
               return {
-                _tag: "steered" as const,
-                response: {
-                  threadId: input.threadId,
-                  turnId: activePromptTurnId,
-                  resumeCursor: ctx.session.resumeCursor,
-                },
+                threadId: input.threadId,
+                turnId,
+                resumeCursor: ctx.session.resumeCursor,
               };
             }
 
-            const turnId = TurnId.make(yield* randomUUIDv4);
             const turnModel =
               input.modelSelection?.instanceId === boundInstanceId
                 ? input.modelSelection.model
@@ -963,113 +944,107 @@ export function makeKiroAcpAdapter(
               payload: model ? { model } : {},
             });
 
-            return {
-              _tag: "newTurn" as const,
-              ctx,
+            const result = yield* ctx.acp
+              .prompt({
+                prompt: promptParts,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
+                ),
+                Effect.tapError((error) =>
+                  options.emitTurnFailedOnError
+                    ? offerTurnFailedEvent(input.threadId, turnId, error)
+                    : Effect.void,
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (ctx.activePrompt?.turnId === turnId) {
+                      ctx.activePrompt = previousActivePrompt;
+                    }
+                    if (ctx.activeTurnId === turnId) {
+                      ctx.activeTurnId = previousActiveTurnId;
+                    }
+                    if (ctx.session.activeTurnId === turnId) {
+                      const nextSession = { ...ctx.session };
+                      if (previousSessionActiveTurnId !== undefined) {
+                        nextSession.activeTurnId = previousSessionActiveTurnId;
+                      } else {
+                        delete nextSession.activeTurnId;
+                      }
+                      ctx.session = nextSession;
+                    }
+                  }),
+                ),
+              );
+
+            ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+            const nextSession = {
+              ...ctx.session,
+              updatedAt: yield* nowIso,
+              ...(model ? { model } : {}),
+            };
+            delete nextSession.activeTurnId;
+            ctx.session = nextSession;
+
+            yield* offerRuntimeEvent({
+              type: "turn.completed",
+              ...(yield* makeEventStamp()),
+              provider,
+              threadId: input.threadId,
               turnId,
-              model,
-              promptParts,
-              previousActivePrompt,
-              previousActiveTurnId,
-              previousSessionActiveTurnId,
+              payload: {
+                state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+                stopReason: result.stopReason ?? null,
+              },
+            });
+
+            return {
+              threadId: input.threadId,
+              turnId,
+              resumeCursor: ctx.session.resumeCursor,
             };
           }),
         );
-
-        if (phase._tag === "steered") {
-          return phase.response;
-        }
-
-        const {
-          ctx,
-          turnId,
-          model,
-          promptParts,
-          previousActivePrompt,
-          previousActiveTurnId,
-          previousSessionActiveTurnId,
-        } = phase;
-
-        // Phase 2 — NOT locked: await the prompt. Interrupt forwards
-        // `session/cancel`, which resolves this with stopReason "cancelled".
-        const result = yield* ctx.acp
-          .prompt({
-            prompt: promptParts,
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
-            ),
-            Effect.tapError((error) =>
-              options.emitTurnFailedOnError
-                ? offerTurnFailedEvent(input.threadId, turnId, error)
-                : Effect.void,
-            ),
-            Effect.ensuring(
-              Effect.sync(() => {
-                if (ctx.activePrompt?.turnId === turnId) {
-                  ctx.activePrompt = previousActivePrompt;
-                }
-                if (ctx.activeTurnId === turnId) {
-                  ctx.activeTurnId = previousActiveTurnId;
-                }
-                if (ctx.session.activeTurnId === turnId) {
-                  const nextSession = { ...ctx.session };
-                  if (previousSessionActiveTurnId !== undefined) {
-                    nextSession.activeTurnId = previousSessionActiveTurnId;
-                  } else {
-                    delete nextSession.activeTurnId;
-                  }
-                  ctx.session = nextSession;
-                }
-              }),
-            ),
-          );
-
-        ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
-        const nextSession = {
-          ...ctx.session,
-          updatedAt: yield* nowIso,
-          ...(model ? { model } : {}),
-        };
-        delete nextSession.activeTurnId;
-        ctx.session = nextSession;
-
-        yield* offerRuntimeEvent({
-          type: "turn.completed",
-          ...(yield* makeEventStamp()),
-          provider,
-          threadId: input.threadId,
-          turnId,
-          payload: {
-            state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-            stopReason: result.stopReason ?? null,
-          },
-        });
-
-        return {
-          threadId: input.threadId,
-          turnId,
-          resumeCursor: ctx.session.resumeCursor,
-        };
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
-      withThreadLock(
-        threadId,
-        Effect.gen(function* () {
-          const ctx = yield* requireSession(threadId);
-          yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-          yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-          // ACP owns prompt termination. Keep the turn active until the prompt
-          // call returns; still forward cancel when local prompt state is missing
-          // because a resumed provider may have remote work in flight.
-          yield* Effect.ignore(ctx.acp.cancel);
-          if (options.stopSessionOnInterruptCancelUnsupported) {
-            yield* stopSessionInternal(ctx);
-          }
-        }),
-      );
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(threadId);
+        // Discard any turns still queued behind the active prompt so they do not
+        // fire after the user pressed stop.
+        ctx.generation += 1;
+        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        const interruptedTurnId = ctx.activePrompt?.turnId;
+        // Prefer the CLI's own graceful cancel: it stops a streaming turn almost
+        // immediately and resolves session/prompt with stopReason "cancelled".
+        yield* Effect.ignore(ctx.acp.cancel);
+        if (options.stopSessionOnInterruptCancelUnsupported) {
+          yield* stopSessionInternal(ctx);
+          return;
+        }
+        if (interruptedTurnId === undefined) {
+          return;
+        }
+        // Bounded fallback: kiro-cli does not reliably honor session/cancel while
+        // it is blocked inside a tool/command execution. If the same turn is still
+        // active after the grace period, force-terminate the session so stop always
+        // takes effect. Runs in the background so the stop is acknowledged
+        // immediately and never blocks a concurrent stopSession.
+        yield* Effect.forkDetach(
+          Effect.gen(function* () {
+            yield* Effect.sleep(CANCEL_FORCE_TERMINATE_DELAY);
+            if (!ctx.stopped && ctx.activePrompt?.turnId === interruptedTurnId) {
+              yield* Effect.logWarning(
+                `${options.runtimeLabel} turn did not stop on cancel; force-terminating session.`,
+                { provider, threadId },
+              );
+              yield* stopSessionInternal(ctx);
+            }
+          }),
+        );
+      });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
       threadId,

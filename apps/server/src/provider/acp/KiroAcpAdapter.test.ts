@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { AcpRequestError } from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -331,37 +332,39 @@ it.effect("stops the ACP session on interrupt after a successful cancel write wh
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("routes text sent during an active ACP prompt through the active prompt hook", () =>
+it.effect("serializes overlapping sendTurn calls into ordered prompts", () =>
   Effect.gen(function* () {
-    const provider = ProviderDriverKind.make("cursor");
-    const threadId = ThreadId.make("standard-acp-active-prompt-steering");
-    const promptStarted = yield* Deferred.make<void>();
-    const promptResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+    const provider = ProviderDriverKind.make("kiro");
+    const threadId = ThreadId.make("kiro-acp-serializes-turns");
+    const firstStarted = yield* Deferred.make<void>();
+    const firstResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
     const cancelCalled = yield* Deferred.make<void>();
-    let promptCallCount = 0;
-    const requests: Array<{ readonly method: string; readonly payload: unknown }> = [];
+    const promptTexts: Array<string> = [];
+    const requests: Array<string> = [];
     const runtime = makeFakeAcpRuntime({
       cancelCalled,
-      prompt: () =>
+      prompt: (payload) =>
+        Effect.gen(function* () {
+          const text = payload.prompt
+            .map((block) => (block.type === "text" ? block.text : ""))
+            .join("");
+          promptTexts.push(text);
+          if (promptTexts.length === 1) {
+            yield* Deferred.succeed(firstStarted, undefined);
+            return yield* Deferred.await(firstResponse);
+          }
+          return { stopReason: "end_turn" } as EffectAcpSchema.PromptResponse;
+        }),
+      request: (method) =>
         Effect.sync(() => {
-          promptCallCount += 1;
-        }).pipe(
-          Effect.andThen(Deferred.succeed(promptStarted, undefined)),
-          Effect.andThen(Deferred.await(promptResponse)),
-        ),
-      request: (method, payload) =>
-        Effect.sync(() => {
-          requests.push({ method, payload });
+          requests.push(method);
           return {};
         }),
     });
 
     const adapter = yield* makeKiroAcpAdapter({
       provider,
-      runtimeLabel: "Fake ACP",
-      activePromptMessageMethod: "_message/send",
-      sendMessageWhilePromptActive: ({ runtime, sessionId, content }) =>
-        runtime.request("_message/send", { sessionId, content }),
+      runtimeLabel: "Kiro",
       makeRuntime: () => Effect.succeed(runtime),
     });
 
@@ -372,152 +375,82 @@ it.effect("routes text sent during an active ACP prompt through the active promp
       runtimeMode: "full-access",
     });
 
-    const sendTurnFiber = yield* adapter
-      .sendTurn({
-        threadId,
-        input: "start a long prompt",
-        attachments: [],
-      })
+    const firstFiber = yield* adapter.sendTurn({ threadId, input: "first" }).pipe(Effect.forkChild);
+    yield* Deferred.await(firstStarted).pipe(Effect.timeout("1 second"));
+
+    // A second message arrives while the first turn is still active.
+    const secondFiber = yield* adapter
+      .sendTurn({ threadId, input: "second" })
       .pipe(Effect.forkChild);
-
     yield* Effect.yieldNow;
-    assert.isUndefined(sendTurnFiber.pollUnsafe());
-    yield* Deferred.await(promptStarted).pipe(Effect.timeout("1 second"));
-    assert.equal(promptCallCount, 1);
 
-    const steeringResult = yield* adapter
-      .sendTurn({
-        threadId,
-        input: "steer the active prompt",
-        attachments: [],
-      })
-      .pipe(Effect.timeout("1 second"));
+    // It must not start a concurrent prompt and must never use `_message/send`.
+    assert.equal(promptTexts.length, 1);
+    assert.deepEqual(requests, []);
 
-    assert.equal(promptCallCount, 1);
-    assert.deepEqual(requests, [
-      {
-        method: "_message/send",
-        payload: { sessionId: "fake-session", content: "steer the active prompt" },
-      },
-    ]);
+    // Completing the first turn lets the queued second turn run as a real prompt.
+    yield* Deferred.succeed(firstResponse, { stopReason: "end_turn" });
+    yield* Fiber.join(firstFiber);
+    yield* Fiber.join(secondFiber).pipe(Effect.timeout("2 seconds"));
 
-    yield* Deferred.succeed(promptResponse, { stopReason: "end_turn" });
-    const firstResult = yield* Fiber.join(sendTurnFiber);
-
-    assert.equal(steeringResult.turnId, firstResult.turnId);
+    assert.deepEqual(promptTexts, ["first", "second"]);
+    assert.deepEqual(requests, []);
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect(
-  "routes attachments sent during an active ACP prompt through the active prompt hook",
-  () =>
-    Effect.gen(function* () {
-      const provider = ProviderDriverKind.make("cursor");
-      const threadId = ThreadId.make("standard-acp-active-prompt-attachment-steering");
-      const promptStarted = yield* Deferred.make<void>();
-      const promptResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
-      const cancelCalled = yield* Deferred.make<void>();
-      const serverConfig = yield* ServerConfig;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const imageBytes = Buffer.from("fake image bytes");
-      const attachment: ChatAttachment = {
-        type: "image",
-        id: "active-prompt-image",
-        name: "active-prompt-image.png",
-        mimeType: "image/png",
-        sizeBytes: imageBytes.byteLength,
-      };
-      yield* fileSystem.writeFile(
-        path.join(serverConfig.attachmentsDir, `${attachment.id}.png`),
-        imageBytes,
-      );
+it.effect("discards turns queued behind an interrupted prompt", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("kiro");
+    const threadId = ThreadId.make("kiro-acp-discard-queued-on-interrupt");
+    const firstStarted = yield* Deferred.make<void>();
+    const firstResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+    const cancelCalled = yield* Deferred.make<void>();
+    let promptCallCount = 0;
+    const runtime = makeFakeAcpRuntime({
+      cancelCalled,
+      prompt: () =>
+        Effect.gen(function* () {
+          promptCallCount += 1;
+          if (promptCallCount === 1) {
+            yield* Deferred.succeed(firstStarted, undefined);
+            return yield* Deferred.await(firstResponse);
+          }
+          return { stopReason: "end_turn" } as EffectAcpSchema.PromptResponse;
+        }),
+    });
 
-      let promptCallCount = 0;
-      const requests: Array<{ readonly method: string; readonly payload: unknown }> = [];
-      const runtime = makeFakeAcpRuntime({
-        cancelCalled,
-        prompt: () =>
-          Effect.sync(() => {
-            promptCallCount += 1;
-          }).pipe(
-            Effect.andThen(Deferred.succeed(promptStarted, undefined)),
-            Effect.andThen(Deferred.await(promptResponse)),
-          ),
-        request: (method, payload) =>
-          Effect.sync(() => {
-            requests.push({ method, payload });
-            return {};
-          }),
-      });
+    const adapter = yield* makeKiroAcpAdapter({
+      provider,
+      runtimeLabel: "Kiro",
+      makeRuntime: () => Effect.succeed(runtime),
+    });
 
-      const adapter = yield* makeKiroAcpAdapter({
-        provider,
-        runtimeLabel: "Fake ACP",
-        activePromptMessageMethod: "_message/send",
-        sendMessageWhilePromptActive: ({ runtime, sessionId, content, contentBlocks }) =>
-          runtime.request("_message/send", {
-            sessionId,
-            content:
-              contentBlocks.length === 1 && contentBlocks[0]?.type === "text"
-                ? content
-                : contentBlocks,
-          }),
-        makeRuntime: () => Effect.succeed(runtime),
-      });
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
 
-      yield* adapter.startSession({
-        threadId,
-        provider,
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-      });
+    const firstFiber = yield* adapter.sendTurn({ threadId, input: "first" }).pipe(Effect.forkChild);
+    yield* Deferred.await(firstStarted).pipe(Effect.timeout("1 second"));
 
-      const sendTurnFiber = yield* adapter
-        .sendTurn({
-          threadId,
-          input: "start a long prompt",
-          attachments: [],
-        })
-        .pipe(Effect.forkChild);
+    const queuedFiber = yield* adapter
+      .sendTurn({ threadId, input: "queued behind the active turn" })
+      .pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
 
-      yield* Effect.yieldNow;
-      assert.isUndefined(sendTurnFiber.pollUnsafe());
-      yield* Deferred.await(promptStarted).pipe(Effect.timeout("1 second"));
+    // Stop cancels the active turn and discards the queued one.
+    yield* adapter.interruptTurn(threadId).pipe(Effect.timeout("1 second"));
+    yield* Deferred.succeed(firstResponse, { stopReason: "cancelled" });
+    yield* Fiber.join(firstFiber);
+    yield* Fiber.join(queuedFiber).pipe(Effect.timeout("2 seconds"));
 
-      const steeringResult = yield* adapter
-        .sendTurn({
-          threadId,
-          input: "inspect this",
-          attachments: [attachment],
-        })
-        .pipe(Effect.timeout("1 second"));
-
-      assert.equal(promptCallCount, 1);
-      assert.deepEqual(requests, [
-        {
-          method: "_message/send",
-          payload: {
-            sessionId: "fake-session",
-            content: [
-              { type: "text", text: "inspect this" },
-              {
-                type: "image",
-                data: imageBytes.toString("base64"),
-                mimeType: "image/png",
-              },
-            ],
-          },
-        },
-      ]);
-
-      yield* Deferred.succeed(promptResponse, { stopReason: "end_turn" });
-      const firstResult = yield* Fiber.join(sendTurnFiber);
-
-      assert.equal(steeringResult.turnId, firstResult.turnId);
-      yield* adapter.stopSession(threadId);
-    }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+    // The queued turn must never reach the CLI after an explicit stop.
+    assert.equal(promptCallCount, 1);
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
 it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
@@ -544,9 +477,6 @@ it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
     const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
-      activePromptMessageMethod: "_message/send",
-      sendMessageWhilePromptActive: ({ runtime, sessionId, content }) =>
-        runtime.request("_message/send", { sessionId, content }),
       makeRuntime: () => Effect.succeed(runtime),
     });
 
@@ -576,36 +506,27 @@ it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("restores the previous active ACP turn after an overlapping prompt fails", () =>
+it.effect("force-terminates the session when a turn ignores cancel", () =>
   Effect.gen(function* () {
-    const provider = ProviderDriverKind.make("cursor");
-    const threadId = ThreadId.make("standard-acp-overlap-failure-restores-active-turn");
+    const provider = ProviderDriverKind.make("kiro");
+    const threadId = ThreadId.make("kiro-acp-cancel-force-terminate");
     const promptStarted = yield* Deferred.make<void>();
     const promptResponse = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
     const cancelCalled = yield* Deferred.make<void>();
-    let promptCallCount = 0;
     const runtime = makeFakeAcpRuntime({
       cancelCalled,
+      // cancel is a no-op here: the turn keeps running, simulating the CLI being
+      // stuck inside a tool/command that does not honor session/cancel.
+      cancel: Effect.void,
       prompt: () =>
-        Effect.sync(() => {
-          promptCallCount += 1;
-          return promptCallCount;
-        }).pipe(
-          Effect.flatMap((callCount) =>
-            callCount === 1
-              ? Deferred.succeed(promptStarted, undefined).pipe(
-                  Effect.andThen(Deferred.await(promptResponse)),
-                )
-              : Effect.fail(
-                  AcpRequestError.internalError("Internal error", "Prompt already in progress"),
-                ),
-          ),
+        Deferred.succeed(promptStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(promptResponse)),
         ),
     });
 
     const adapter = yield* makeKiroAcpAdapter({
       provider,
-      runtimeLabel: "Fake ACP",
+      runtimeLabel: "Kiro",
       makeRuntime: () => Effect.succeed(runtime),
     });
 
@@ -616,34 +537,21 @@ it.effect("restores the previous active ACP turn after an overlapping prompt fai
       runtimeMode: "full-access",
     });
 
-    const sendTurnFiber = yield* adapter
-      .sendTurn({
-        threadId,
-        input: "start a long prompt",
-        attachments: [],
-      })
+    const turnFiber = yield* adapter
+      .sendTurn({ threadId, input: "stuck turn" })
       .pipe(Effect.forkChild);
-
     yield* Deferred.await(promptStarted).pipe(Effect.timeout("1 second"));
-    const sessionsWhileFirstPromptRuns = yield* adapter.listSessions();
-    const firstActiveTurnId = sessionsWhileFirstPromptRuns[0]?.activeTurnId;
-    assert.isDefined(firstActiveTurnId);
+    assert.isTrue(yield* adapter.hasSession(threadId));
 
-    const secondExit = yield* adapter
-      .sendTurn({
-        threadId,
-        input: "overlapping prompt",
-        attachments: [],
-      })
-      .pipe(Effect.exit, Effect.timeout("1 second"));
+    yield* adapter.interruptTurn(threadId);
+    yield* Effect.yieldNow;
+    // Cancel did nothing; advancing past the grace period fires the fallback.
+    yield* TestClock.adjust("6 seconds");
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
 
-    assert.isTrue(Exit.isFailure(secondExit));
-    const sessionsAfterOverlapFailure = yield* adapter.listSessions();
-    assert.equal(sessionsAfterOverlapFailure[0]?.activeTurnId, firstActiveTurnId);
-
-    yield* Deferred.succeed(promptResponse, { stopReason: "end_turn" });
-    yield* Fiber.join(sendTurnFiber);
-    yield* adapter.stopSession(threadId);
+    assert.isFalse(yield* adapter.hasSession(threadId));
+    yield* Fiber.interrupt(turnFiber);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 

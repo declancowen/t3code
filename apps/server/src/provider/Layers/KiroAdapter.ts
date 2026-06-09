@@ -12,7 +12,6 @@ import { augmentProviderTurnInputWithCodexContext } from "../CodexSkillBridge.ts
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("kiro");
-const KIRO_ACTIVE_PROMPT_MESSAGE_METHOD = "_message/send";
 
 export interface KiroAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -29,13 +28,13 @@ export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapte
     ...(options?.nativeEventLogPath ? { nativeEventLogPath: options.nativeEventLogPath } : {}),
     ...(options?.nativeEventLogger ? { nativeEventLogger: options.nativeEventLogger } : {}),
     ...(options?.instanceId ? { instanceId: options.instanceId } : {}),
-    activePromptMessageMethod: KIRO_ACTIVE_PROMPT_MESSAGE_METHOD,
-    // kiro-cli `acp` honors `session/cancel`: it stops a live turn within ~1ms
-    // and resolves the in-flight `session/prompt` with `stopReason: "cancelled"`
+    // kiro-cli `acp` honors `session/cancel`: it stops a streaming turn within
+    // ~1ms and resolves the in-flight `session/prompt` with `stopReason: "cancelled"`
     // (verified against kiro-cli 2.5.0). So interrupt forwards cancel and lets
     // the CLI terminate the turn while keeping the session warm — we do NOT tear
     // down the process, which previously forced an expensive cold start on the
-    // next message. (Hard-stop remains available via stopSession.)
+    // next message. interruptTurn adds a bounded force-terminate fallback for the
+    // case where the CLI is stuck inside a tool/command and ignores cancel.
     stopSessionOnInterruptCancelUnsupported: false,
     // Terminal-event guarantee: if `session/prompt` fails at the RPC/transport
     // level (CLI crash, broken pipe, malformed response) there is no `stopReason`
@@ -45,12 +44,6 @@ export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapte
     // successful/cancelled turn goes through the normal completion path and never
     // reaches here. (Graceful cancel resolves with stopReason "cancelled" — see A.)
     emitTurnFailedOnError: true,
-    sendMessageWhilePromptActive: ({ runtime, sessionId, content, contentBlocks }) =>
-      runtime.request(KIRO_ACTIVE_PROMPT_MESSAGE_METHOD, {
-        sessionId,
-        content:
-          contentBlocks.length === 1 && contentBlocks[0]?.type === "text" ? content : contentBlocks,
-      }),
     makeRuntime: (input) =>
       makeKiroAcpRuntime({
         kiroSettings,
