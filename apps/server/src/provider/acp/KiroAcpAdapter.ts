@@ -67,7 +67,7 @@ const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
 
-export interface StandardAcpAdapterOptions {
+export interface KiroAcpAdapterOptions {
   readonly provider: ProviderDriverKind;
   readonly runtimeLabel: string;
   readonly environment?: NodeJS.ProcessEnv;
@@ -75,7 +75,6 @@ export interface StandardAcpAdapterOptions {
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
   readonly activePromptMessageMethod?: string;
-  readonly supportedImageMimeTypes?: ReadonlySet<string>;
   readonly stopSessionOnInterruptCancelUnsupported?: boolean;
   /**
    * When the underlying agent's `prompt` call fails after a turn has started,
@@ -292,8 +291,8 @@ function settlePendingUserInputsAsEmptyAnswers(
   );
 }
 
-export function makeStandardAcpAdapter(
-  options: StandardAcpAdapterOptions,
+export function makeKiroAcpAdapter(
+  options: KiroAcpAdapterOptions,
 ): Effect.Effect<
   ProviderAdapterShape<ProviderAdapterError>,
   never,
@@ -481,17 +480,12 @@ export function makeStandardAcpAdapter(
             });
           }
           for (const attachment of input.attachments) {
-            const supportedImageMimeTypes = options.supportedImageMimeTypes;
-            if (
-              supportedImageMimeTypes &&
-              !supportedImageMimeTypes.has(attachment.mimeType.toLowerCase())
-            ) {
-              return yield* new ProviderAdapterRequestError({
-                provider,
-                method,
-                detail: `Unsupported ${options.runtimeLabel} image attachment type '${attachment.mimeType}'.`,
-              });
-            }
+            // Image support is gated by the agent's advertised
+            // `promptCapabilities.image` (checked above via supportsImagePrompts).
+            // We intentionally do NOT impose a local MIME allowlist: the CLI is
+            // the authority on which image types it accepts, and pre-rejecting
+            // here only risks blocking types the CLI would have handled. If a
+            // type is genuinely unsupported, the CLI surfaces the error.
             const attachmentPath = resolveAttachmentPath({
               attachmentsDir: serverConfig.attachmentsDir,
               attachment,
@@ -797,6 +791,23 @@ export function makeStandardAcpAdapter(
                       }),
                     );
                     return;
+                  case "UsageUpdated":
+                    yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    yield* offerRuntimeEvent({
+                      type: "thread.token-usage.updated",
+                      ...(yield* makeEventStamp()),
+                      provider,
+                      threadId: ctx.threadId,
+                      ...(ctx.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+                      payload: {
+                        usage: {
+                          usedTokens: event.usedTokens,
+                          lastUsedTokens: event.usedTokens,
+                          ...(event.maxTokens !== undefined ? { maxTokens: event.maxTokens } : {}),
+                        },
+                      },
+                    });
+                    return;
                 }
               }),
             ),
@@ -843,103 +854,144 @@ export function makeStandardAcpAdapter(
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
-        const activePromptTurnId =
-          ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
-        if (activePromptTurnId && options.sendMessageWhilePromptActive) {
-          const method = options.activePromptMessageMethod ?? "session/message";
-          const contentBlocks = yield* buildPromptContentBlocks(
-            input,
-            method,
-            ctx.supportsImagePrompts,
-          );
-          const content = contentBlocks
-            .filter(
-              (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
-                block.type === "text",
-            )
-            .map((block) => block.text)
-            .join("\n")
-            .trim();
-          yield* options
-            .sendMessageWhilePromptActive({
+        // Phase 1 — serialized per thread: classify the message and mutate the
+        // active-prompt/turn state atomically. Holding the thread lock here closes
+        // the TOCTOU where two near-simultaneous messages could both be classified
+        // against stale `activePrompt` state (dropping a follow-up or letting it
+        // supersede the previous turn). The long-running prompt await happens in
+        // phase 2 OUTSIDE the lock, so interrupt/stop are never blocked behind it.
+        const phase = yield* withThreadLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const ctx = yield* requireSession(input.threadId);
+            const activePromptTurnId =
+              ctx.activePrompt?.turnId ?? ctx.activeTurnId ?? ctx.session.activeTurnId;
+            if (activePromptTurnId && options.sendMessageWhilePromptActive) {
+              const method = options.activePromptMessageMethod ?? "session/message";
+              const contentBlocks = yield* buildPromptContentBlocks(
+                input,
+                method,
+                ctx.supportsImagePrompts,
+              );
+              const content = contentBlocks
+                .filter(
+                  (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "text" }> =>
+                    block.type === "text",
+                )
+                .map((block) => block.text)
+                .join("\n")
+                .trim();
+              yield* options
+                .sendMessageWhilePromptActive({
+                  runtime: ctx.acp,
+                  sessionId: ctx.acpSessionId,
+                  content,
+                  contentBlocks,
+                })
+                .pipe(
+                  Effect.mapError((error) =>
+                    mapAcpToAdapterError(provider, input.threadId, method, error),
+                  ),
+                );
+
+              ctx.activePrompt = { turnId: activePromptTurnId };
+              ctx.activeTurnId = activePromptTurnId;
+              ctx.session = {
+                ...ctx.session,
+                activeTurnId: activePromptTurnId,
+                updatedAt: yield* nowIso,
+              };
+
+              yield* offerRuntimeEvent({
+                type: "turn.started",
+                ...(yield* makeEventStamp()),
+                provider,
+                threadId: input.threadId,
+                turnId: activePromptTurnId,
+                payload: {},
+              });
+
+              return {
+                _tag: "steered" as const,
+                response: {
+                  threadId: input.threadId,
+                  turnId: activePromptTurnId,
+                  resumeCursor: ctx.session.resumeCursor,
+                },
+              };
+            }
+
+            const turnId = TurnId.make(yield* randomUUIDv4);
+            const turnModel =
+              input.modelSelection?.instanceId === boundInstanceId
+                ? input.modelSelection.model
+                : undefined;
+            const model = turnModel ?? ctx.session.model;
+            yield* applyRequestedSessionConfiguration({
               runtime: ctx.acp,
-              sessionId: ctx.acpSessionId,
-              content,
-              contentBlocks,
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(provider, input.threadId, method, error),
-              ),
+              runtimeMode: ctx.session.runtimeMode,
+              interactionMode: input.interactionMode,
+              model,
+              mapError: ({ cause, method }) =>
+                mapAcpToAdapterError(provider, input.threadId, method, cause),
+            });
+
+            const promptParts = yield* buildPromptContentBlocks(
+              input,
+              "session/prompt",
+              ctx.supportsImagePrompts,
             );
 
-          ctx.activePrompt = { turnId: activePromptTurnId };
-          ctx.activeTurnId = activePromptTurnId;
-          ctx.session = {
-            ...ctx.session,
-            activeTurnId: activePromptTurnId,
-            updatedAt: yield* nowIso,
-          };
+            const previousActivePrompt = ctx.activePrompt;
+            const previousActiveTurnId = ctx.activeTurnId;
+            const previousSessionActiveTurnId = ctx.session.activeTurnId;
+            ctx.activePrompt = { turnId };
+            ctx.activeTurnId = turnId;
+            ctx.lastPlanFingerprint = undefined;
+            ctx.session = {
+              ...ctx.session,
+              activeTurnId: turnId,
+              updatedAt: yield* nowIso,
+            };
 
-          yield* offerRuntimeEvent({
-            type: "turn.started",
-            ...(yield* makeEventStamp()),
-            provider,
-            threadId: input.threadId,
-            turnId: activePromptTurnId,
-            payload: {},
-          });
+            yield* offerRuntimeEvent({
+              type: "turn.started",
+              ...(yield* makeEventStamp()),
+              provider,
+              threadId: input.threadId,
+              turnId,
+              payload: model ? { model } : {},
+            });
 
-          return {
-            threadId: input.threadId,
-            turnId: activePromptTurnId,
-            resumeCursor: ctx.session.resumeCursor,
-          };
-        }
-
-        const turnId = TurnId.make(yield* randomUUIDv4);
-        const turnModel =
-          input.modelSelection?.instanceId === boundInstanceId
-            ? input.modelSelection.model
-            : undefined;
-        const model = turnModel ?? ctx.session.model;
-        yield* applyRequestedSessionConfiguration({
-          runtime: ctx.acp,
-          runtimeMode: ctx.session.runtimeMode,
-          interactionMode: input.interactionMode,
-          model,
-          mapError: ({ cause, method }) =>
-            mapAcpToAdapterError(provider, input.threadId, method, cause),
-        });
-
-        const promptParts = yield* buildPromptContentBlocks(
-          input,
-          "session/prompt",
-          ctx.supportsImagePrompts,
+            return {
+              _tag: "newTurn" as const,
+              ctx,
+              turnId,
+              model,
+              promptParts,
+              previousActivePrompt,
+              previousActiveTurnId,
+              previousSessionActiveTurnId,
+            };
+          }),
         );
 
-        const previousActivePrompt = ctx.activePrompt;
-        const previousActiveTurnId = ctx.activeTurnId;
-        const previousSessionActiveTurnId = ctx.session.activeTurnId;
-        ctx.activePrompt = { turnId };
-        ctx.activeTurnId = turnId;
-        ctx.lastPlanFingerprint = undefined;
-        ctx.session = {
-          ...ctx.session,
-          activeTurnId: turnId,
-          updatedAt: yield* nowIso,
-        };
+        if (phase._tag === "steered") {
+          return phase.response;
+        }
 
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider,
-          threadId: input.threadId,
+        const {
+          ctx,
           turnId,
-          payload: model ? { model } : {},
-        });
+          model,
+          promptParts,
+          previousActivePrompt,
+          previousActiveTurnId,
+          previousSessionActiveTurnId,
+        } = phase;
 
+        // Phase 2 — NOT locked: await the prompt. Interrupt forwards
+        // `session/cancel`, which resolves this with stopReason "cancelled".
         const result = yield* ctx.acp
           .prompt({
             prompt: promptParts,
@@ -1003,18 +1055,21 @@ export function makeStandardAcpAdapter(
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        // ACP owns prompt termination. Keep the turn active until the prompt
-        // call returns; still forward cancel when local prompt state is missing
-        // because a resumed provider may have remote work in flight.
-        yield* Effect.ignore(ctx.acp.cancel);
-        if (options.stopSessionOnInterruptCancelUnsupported) {
-          yield* stopSessionInternal(ctx);
-        }
-      });
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const ctx = yield* requireSession(threadId);
+          yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+          yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+          // ACP owns prompt termination. Keep the turn active until the prompt
+          // call returns; still forward cancel when local prompt state is missing
+          // because a resumed provider may have remote work in flight.
+          yield* Effect.ignore(ctx.acp.cancel);
+          if (options.stopSessionOnInterruptCancelUnsupported) {
+            yield* stopSessionInternal(ctx);
+          }
+        }),
+      );
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
       threadId,

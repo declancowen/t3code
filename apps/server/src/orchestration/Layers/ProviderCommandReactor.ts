@@ -1001,13 +1001,21 @@ const make = Effect.gen(function* () {
     );
 
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
+  // Dedicated fast lane for turn interrupts. The main worker is strictly serial,
+  // so a `stop` could otherwise sit behind another thread's in-flight turn-start
+  // or approval handler. Interrupt handling is idempotent and no-ops gracefully
+  // when no active turn is bound, so processing it on a separate fiber is safe and
+  // guarantees "stop" is acted on promptly regardless of other thread activity.
+  const interruptWorker = yield* makeDrainableWorker(processDomainEventSafely);
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
+      if (event.type === "thread.turn-interrupt-requested") {
+        return yield* interruptWorker.enqueue(event);
+      }
       if (
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
-        event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"
@@ -1023,7 +1031,7 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    drain: Effect.all([worker.drain, interruptWorker.drain], { discard: true }),
   } satisfies ProviderCommandReactorShape;
 });
 

@@ -166,6 +166,11 @@ const makeAcpSessionRuntime = (
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
+    // Tracks the model id most recently pushed via `session/set_model` so we can
+    // skip redundant round-trips when the requested model is unchanged. Only the
+    // `session-set-model` strategy uses this; the `config-option` strategy already
+    // de-dupes via `setConfigOption`'s currentValue guard.
+    const lastSetModelRef = yield* Ref.make<string | undefined>(undefined);
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
@@ -550,14 +555,21 @@ const makeAcpSessionRuntime = (
             if (options.setModelStrategy !== "session-set-model") {
               return setConfigOption(started.modelConfigId ?? "model", model);
             }
-            const requestPayload = {
-              sessionId: started.sessionId,
-              modelId: model,
-            } satisfies EffectAcpSchema.SetSessionModelRequest;
-            return runLoggedRequest(
-              "session/set_model",
-              requestPayload,
-              acp.agent.setSessionModel(requestPayload),
+            return Ref.get(lastSetModelRef).pipe(
+              Effect.flatMap((lastModel) => {
+                if (lastModel === model) {
+                  return Effect.void;
+                }
+                const requestPayload = {
+                  sessionId: started.sessionId,
+                  modelId: model,
+                } satisfies EffectAcpSchema.SetSessionModelRequest;
+                return runLoggedRequest(
+                  "session/set_model",
+                  requestPayload,
+                  acp.agent.setSessionModel(requestPayload),
+                ).pipe(Effect.tap(() => Ref.set(lastSetModelRef, model)));
+              }),
             );
           }),
           Effect.asVoid,

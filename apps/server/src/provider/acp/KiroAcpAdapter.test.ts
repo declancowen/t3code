@@ -14,9 +14,11 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { type ChatAttachment, ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ProviderAdapterValidationError } from "../Errors.ts";
+import type { AcpParsedSessionEvent } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
-import { makeStandardAcpAdapter } from "./StandardAcpAdapter.ts";
+import { makeKiroAcpAdapter } from "./KiroAcpAdapter.ts";
 
 const standardAcpAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-standard-acp-test-",
@@ -25,9 +27,12 @@ const standardAcpAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
 function makeFakeAcpRuntime(input: {
   readonly cancelCalled: Deferred.Deferred<void>;
   readonly cancel?: Effect.Effect<void, AcpRequestError>;
-  readonly prompt?: () => Effect.Effect<EffectAcpSchema.PromptResponse, unknown>;
+  readonly prompt?: (
+    payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+  ) => Effect.Effect<EffectAcpSchema.PromptResponse, unknown>;
   readonly request?: (method: string, payload: unknown) => Effect.Effect<unknown, unknown>;
   readonly supportsImagePrompts?: boolean;
+  readonly events?: Stream.Stream<AcpParsedSessionEvent>;
 }): AcpSessionRuntimeShape {
   const ignoreHandler = () => Effect.void;
   return {
@@ -63,7 +68,7 @@ function makeFakeAcpRuntime(input: {
         } as EffectAcpSchema.NewSessionResponse,
         modelConfigId: undefined,
       }),
-    getEvents: () => Stream.empty,
+    getEvents: () => input.events ?? Stream.empty,
     getModeState: Effect.sync(() => undefined),
     getConfigOptions: Effect.succeed([]),
     prompt: input.prompt ?? (() => Effect.succeed({ stopReason: "end_turn" })),
@@ -91,7 +96,7 @@ it.effect("keeps interrupted ACP turns active until session/prompt resolves", ()
         ),
     });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       makeRuntime: () => Effect.succeed(runtime),
@@ -147,7 +152,7 @@ it.effect("rejects image attachments when the ACP session does not advertise ima
       sizeBytes: 1,
     };
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       makeRuntime: () => Effect.succeed(runtime),
@@ -174,24 +179,44 @@ it.effect("rejects image attachments when the ACP session does not advertise ima
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("rejects image attachments outside a provider image MIME allowlist", () =>
+it.effect("forwards image attachments to the agent without a local MIME allowlist", () =>
   Effect.gen(function* () {
     const provider = ProviderDriverKind.make("kiro");
-    const threadId = ThreadId.make("standard-acp-image-mime-allowlist");
+    const threadId = ThreadId.make("kiro-acp-image-forwarded");
     const cancelCalled = yield* Deferred.make<void>();
-    const runtime = makeFakeAcpRuntime({ cancelCalled });
+    const promptReceived = yield* Deferred.make<ReadonlyArray<EffectAcpSchema.ContentBlock>>();
+    const runtime = makeFakeAcpRuntime({
+      cancelCalled,
+      prompt: (payload) =>
+        Deferred.succeed(promptReceived, payload.prompt).pipe(
+          Effect.as({ stopReason: "end_turn" } as EffectAcpSchema.PromptResponse),
+        ),
+    });
+
+    // image/svg+xml was previously rejected by a static MIME allowlist before it
+    // ever reached the CLI. The agent advertises promptCapabilities.image, so the
+    // attachment must now be forwarded and the CLI left to accept or reject it.
     const attachment: ChatAttachment = {
       type: "image",
-      id: "image-mime-allowlist",
-      name: "image-mime-allowlist.svg",
+      id: "imageforwardedsvg",
+      name: "diagram.svg",
       mimeType: "image/svg+xml",
-      sizeBytes: 1,
+      sizeBytes: 6,
     };
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const serverConfig = yield* ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const attachmentPath = resolveAttachmentPath({
+      attachmentsDir: serverConfig.attachmentsDir,
+      attachment,
+    });
+    assert.isNotNull(attachmentPath);
+    yield* fs.makeDirectory(serverConfig.attachmentsDir, { recursive: true });
+    yield* fs.writeFile(attachmentPath!, new TextEncoder().encode("<svg/>"));
+
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Kiro",
-      supportedImageMimeTypes: new Set(["image/png"]),
       makeRuntime: () => Effect.succeed(runtime),
     });
 
@@ -202,16 +227,19 @@ it.effect("rejects image attachments outside a provider image MIME allowlist", (
       runtimeMode: "full-access",
     });
 
-    const error = yield* adapter
-      .sendTurn({
-        threadId,
-        input: "inspect",
-        attachments: [attachment],
-      })
-      .pipe(Effect.flip, Effect.timeout("1 second"));
+    yield* adapter.sendTurn({
+      threadId,
+      input: "inspect",
+      attachments: [attachment],
+    });
 
-    assert.instanceOf(error, ProviderAdapterRequestError);
-    assert.equal(error.detail, "Unsupported Kiro image attachment type 'image/svg+xml'.");
+    const promptParts = yield* Deferred.await(promptReceived).pipe(Effect.timeout("1 second"));
+    const imageBlock = promptParts.find(
+      (block): block is Extract<EffectAcpSchema.ContentBlock, { type: "image" }> =>
+        block.type === "image",
+    );
+    assert.isDefined(imageBlock);
+    assert.equal(imageBlock!.mimeType, "image/svg+xml");
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
@@ -223,7 +251,7 @@ it.effect("forwards session/cancel when no local active prompt is registered", (
     const cancelCalled = yield* Deferred.make<void>();
     const runtime = makeFakeAcpRuntime({ cancelCalled });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       makeRuntime: () => Effect.succeed(runtime),
@@ -254,7 +282,7 @@ it.effect("stops the ACP session on interrupt when cancel is unsupported and opt
       ),
     });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       stopSessionOnInterruptCancelUnsupported: true,
@@ -282,7 +310,7 @@ it.effect("stops the ACP session on interrupt after a successful cancel write wh
     const cancelCalled = yield* Deferred.make<void>();
     const runtime = makeFakeAcpRuntime({ cancelCalled });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       stopSessionOnInterruptCancelUnsupported: true,
@@ -328,7 +356,7 @@ it.effect("routes text sent during an active ACP prompt through the active promp
         }),
     });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       activePromptMessageMethod: "_message/send",
@@ -424,7 +452,7 @@ it.effect(
           }),
       });
 
-      const adapter = yield* makeStandardAcpAdapter({
+      const adapter = yield* makeKiroAcpAdapter({
         provider,
         runtimeLabel: "Fake ACP",
         activePromptMessageMethod: "_message/send",
@@ -513,7 +541,7 @@ it.effect("starts a fresh ACP prompt after the previous prompt completes", () =>
         }),
     });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       activePromptMessageMethod: "_message/send",
@@ -575,7 +603,7 @@ it.effect("restores the previous active ACP turn after an overlapping prompt fai
         ),
     });
 
-    const adapter = yield* makeStandardAcpAdapter({
+    const adapter = yield* makeKiroAcpAdapter({
       provider,
       runtimeLabel: "Fake ACP",
       makeRuntime: () => Effect.succeed(runtime),
@@ -615,6 +643,63 @@ it.effect("restores the previous active ACP turn after an overlapping prompt fai
 
     yield* Deferred.succeed(promptResponse, { stopReason: "end_turn" });
     yield* Fiber.join(sendTurnFiber);
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("emits a context-window token-usage event from ACP usage updates", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("kiro");
+    const threadId = ThreadId.make("standard-acp-usage-update-token-usage");
+    const cancelCalled = yield* Deferred.make<void>();
+    const usageEvent: AcpParsedSessionEvent = {
+      _tag: "UsageUpdated",
+      usedTokens: 4242,
+      maxTokens: 1_000_000,
+      rawPayload: {
+        sessionId: "fake-session",
+        update: { sessionUpdate: "usage_update", used: 4242, size: 1_000_000 },
+      },
+    };
+    const runtime = makeFakeAcpRuntime({
+      cancelCalled,
+      events: Stream.make(usageEvent),
+    });
+
+    const adapter = yield* makeKiroAcpAdapter({
+      provider,
+      runtimeLabel: "Kiro",
+      makeRuntime: () => Effect.succeed(runtime),
+    });
+
+    const collector = yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.type === "thread.token-usage.updated"),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+
+    const collected = yield* Fiber.join(collector).pipe(Effect.timeout("2 seconds"));
+    const events = Array.from(collected);
+    assert.equal(events.length, 1);
+    const event = events[0];
+    assert.equal(event?.type, "thread.token-usage.updated");
+    if (event?.type === "thread.token-usage.updated") {
+      assert.equal(event.threadId, threadId);
+      assert.deepEqual(event.payload.usage, {
+        usedTokens: 4242,
+        lastUsedTokens: 4242,
+        maxTokens: 1_000_000,
+      });
+    }
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );

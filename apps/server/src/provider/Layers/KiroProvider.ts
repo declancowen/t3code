@@ -556,28 +556,29 @@ export const checkKiroProviderStatus = Effect.fn("checkKiroProviderStatus")(func
       discoveredModels = parseKiroListModelsOutput(listModelsExit.value.value);
     }
 
-    const discoveryExit = yield* Effect.exit(
-      discoverKiroModelsViaAcp(kiroSettings, environment).pipe(
-        Effect.timeoutOption(KIRO_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-      ),
-    );
-    if (Exit.isFailure(discoveryExit)) {
-      yield* Effect.logWarning("Kiro ACP model discovery failed", {
-        cause: Cause.pretty(discoveryExit.cause),
-      });
-      if (discoveredModels.length === 0) {
+    // `chat --list-models` is a cheap one-shot CLI call. Only fall back to the
+    // expensive full ACP session spawn (initialize + session/new, 15s budget)
+    // when the cheap path yields nothing — otherwise every status refresh would
+    // spin up and tear down a throwaway kiro-cli acp process, competing with the
+    // user's real session for CLI/auth resources.
+    if (discoveredModels.length === 0) {
+      const discoveryExit = yield* Effect.exit(
+        discoverKiroModelsViaAcp(kiroSettings, environment).pipe(
+          Effect.timeoutOption(KIRO_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+        ),
+      );
+      if (Exit.isFailure(discoveryExit)) {
+        yield* Effect.logWarning("Kiro ACP model discovery failed", {
+          cause: Cause.pretty(discoveryExit.cause),
+        });
         discoveryWarning = "Kiro model discovery failed. Check server logs for details.";
-      }
-    } else if (Option.isNone(discoveryExit.value)) {
-      if (discoveredModels.length === 0) {
+      } else if (Option.isNone(discoveryExit.value)) {
         discoveryWarning = `Kiro model discovery timed out after ${KIRO_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`;
-      }
-    } else if (discoveryExit.value.value.length === 0) {
-      if (discoveredModels.length === 0) {
+      } else if (discoveryExit.value.value.length === 0) {
         discoveryWarning = "Kiro model discovery returned no built-in models.";
+      } else {
+        discoveredModels = mergeKiroDiscoveredModels(discoveredModels, discoveryExit.value.value);
       }
-    } else {
-      discoveredModels = mergeKiroDiscoveredModels(discoveredModels, discoveryExit.value.value);
     }
   }
 

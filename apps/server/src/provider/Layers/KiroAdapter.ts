@@ -7,18 +7,12 @@ import {
 import * as Effect from "effect/Effect";
 
 import { makeKiroAcpRuntime } from "../acp/KiroAcpSupport.ts";
-import { makeStandardAcpAdapter } from "../acp/StandardAcpAdapter.ts";
+import { makeKiroAcpAdapter } from "../acp/KiroAcpAdapter.ts";
 import { augmentProviderTurnInputWithCodexContext } from "../CodexSkillBridge.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("kiro");
 const KIRO_ACTIVE_PROMPT_MESSAGE_METHOD = "_message/send";
-const SUPPORTED_KIRO_IMAGE_MIME_TYPES = new Set([
-  "image/gif",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
 
 export interface KiroAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -28,7 +22,7 @@ export interface KiroAdapterLiveOptions {
 }
 
 export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapterLiveOptions) {
-  return makeStandardAcpAdapter({
+  return makeKiroAcpAdapter({
     provider: PROVIDER,
     runtimeLabel: "Kiro",
     ...(options?.environment ? { environment: options.environment } : {}),
@@ -36,11 +30,20 @@ export function makeKiroAdapter(kiroSettings: KiroSettings, options?: KiroAdapte
     ...(options?.nativeEventLogger ? { nativeEventLogger: options.nativeEventLogger } : {}),
     ...(options?.instanceId ? { instanceId: options.instanceId } : {}),
     activePromptMessageMethod: KIRO_ACTIVE_PROMPT_MESSAGE_METHOD,
-    supportedImageMimeTypes: SUPPORTED_KIRO_IMAGE_MIME_TYPES,
-    stopSessionOnInterruptCancelUnsupported: true,
-    // Kiro's CLI can fail a started prompt (e.g. on image attachments or a
-    // mid-turn _message/send) without ever sending a turn-stop. Emit a terminal
-    // turn.completed{failed} so the UI does not stay stuck "running".
+    // kiro-cli `acp` honors `session/cancel`: it stops a live turn within ~1ms
+    // and resolves the in-flight `session/prompt` with `stopReason: "cancelled"`
+    // (verified against kiro-cli 2.5.0). So interrupt forwards cancel and lets
+    // the CLI terminate the turn while keeping the session warm — we do NOT tear
+    // down the process, which previously forced an expensive cold start on the
+    // next message. (Hard-stop remains available via stopSession.)
+    stopSessionOnInterruptCancelUnsupported: false,
+    // Terminal-event guarantee: if `session/prompt` fails at the RPC/transport
+    // level (CLI crash, broken pipe, malformed response) there is no `stopReason`
+    // to drive a normal turn.completed, so the UI would otherwise hang "running".
+    // We emit a terminal turn.completed{failed} in that case. Note this is NOT a
+    // double-emit risk: ACP's terminal turn signal IS the prompt response, so a
+    // successful/cancelled turn goes through the normal completion path and never
+    // reaches here. (Graceful cancel resolves with stopReason "cancelled" — see A.)
     emitTurnFailedOnError: true,
     sendMessageWhilePromptActive: ({ runtime, sessionId, content, contentBlocks }) =>
       runtime.request(KIRO_ACTIVE_PROMPT_MESSAGE_METHOD, {
