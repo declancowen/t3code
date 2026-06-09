@@ -69,6 +69,12 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "UsageUpdated";
+      readonly usedTokens: number;
+      readonly maxTokens?: number;
+      readonly rawPayload: unknown;
     };
 
 type AcpSessionSetupResponse =
@@ -532,6 +538,30 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           rawPayload: params,
         });
       }
+      break;
+    }
+    case "usage_update": {
+      // **UNSTABLE** ACP capability: context window + cost update for a
+      // session. `used` is the tokens currently in context, `size` the total
+      // context window. Map it onto the same token-usage snapshot Codex/Claude
+      // emit so the shared context-window meter renders for ACP providers.
+      const usedTokens =
+        typeof upd.used === "number" && Number.isFinite(upd.used) && upd.used > 0
+          ? Math.trunc(upd.used)
+          : undefined;
+      if (usedTokens === undefined) {
+        break;
+      }
+      const maxTokens =
+        typeof upd.size === "number" && Number.isFinite(upd.size) && upd.size > 0
+          ? Math.trunc(upd.size)
+          : undefined;
+      events.push({
+        _tag: "UsageUpdated",
+        usedTokens,
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        rawPayload: params,
+      });
       break;
     }
     default:

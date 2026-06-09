@@ -307,4 +307,72 @@ describe("AcpRuntimeModel", () => {
     expect(commandRequest.kind).toBe("execute");
     expect(commandRequest.toolCall?.kind).toBe("execute");
   });
+
+  it("projects ACP usage updates into a context-window token-usage event", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 12_345,
+        size: 1_000_000,
+        cost: { amount: 0.42, currency: "USD" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events).toEqual([
+      {
+        _tag: "UsageUpdated",
+        usedTokens: 12_345,
+        maxTokens: 1_000_000,
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "usage_update",
+            used: 12_345,
+            size: 1_000_000,
+            cost: { amount: 0.42, currency: "USD" },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("omits the max context window when the ACP usage size is not positive", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 200,
+        size: 0,
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events).toEqual([
+      {
+        _tag: "UsageUpdated",
+        usedTokens: 200,
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "usage_update",
+            used: 200,
+            size: 0,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("drops ACP usage updates that report no tokens in context", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 0,
+        size: 1_000_000,
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events).toEqual([]);
+  });
 });
