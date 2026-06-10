@@ -8,7 +8,6 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationCommand,
-  type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";

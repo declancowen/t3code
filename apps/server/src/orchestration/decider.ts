@@ -867,6 +867,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // The dispatch fires at the instant the previous turn completed, so the
+      // queued message would otherwise share that reply's timestamp. Nudge the
+      // displayed user-message time one second forward so it reads as a distinct,
+      // later entry in the thread (it is still dispatched now — only the shown
+      // timestamp is offset). Removal + turn-start keep the real dispatch time.
+      const dispatchedAt = DateTime.formatIso(
+        DateTime.add(DateTime.makeUnsafe(command.createdAt), { seconds: 1 }),
+      );
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -883,8 +891,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(head.attachments !== undefined ? { attachments: head.attachments } : {}),
           turnId: null,
           streaming: false,
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
+          createdAt: dispatchedAt,
+          updatedAt: dispatchedAt,
         },
       };
       const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
