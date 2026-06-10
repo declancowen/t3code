@@ -891,31 +891,11 @@ export function makeKiroAcpAdapter(
       Effect.gen(function* () {
         // kiro-cli accepts the reasoning effort level only as a spawn flag
         // (`kiro-cli acp --effort`); there is no in-session ACP method for it.
-        // So a mid-thread effort change is applied by respawning the ACP session
-        // and resuming the same conversation, mirroring how the model selector
-        // switches in-session but via a fresh process. Done before acquiring the
-        // prompt lock so we never restart underneath an in-flight prompt.
-        const requestedEffort =
-          input.modelSelection?.instanceId === boundInstanceId
-            ? kiroEffortFromSelections(input.modelSelection.options)
-            : undefined;
-        const current = sessions.get(input.threadId);
-        if (
-          current &&
-          !current.stopped &&
-          requestedEffort !== undefined &&
-          requestedEffort !== current.effort
-        ) {
-          yield* startSession({
-            threadId: input.threadId,
-            provider,
-            ...(current.session.cwd ? { cwd: current.session.cwd } : {}),
-            runtimeMode: current.session.runtimeMode,
-            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-            ...(current.session.resumeCursor ? { resumeCursor: current.session.resumeCursor } : {}),
-          });
-        }
-
+        // Effort is therefore applied once, when the session is first spawned
+        // (see startSession). A mid-thread effort change is intentionally NOT
+        // applied to the live session: respawning mid-conversation tears down the
+        // in-flight turn and corrupts/duplicates streamed output. The newly
+        // selected effort takes effect on the next fresh session/thread.
         const ctx = yield* requireSession(input.threadId);
         const turnId = TurnId.make(yield* randomUUIDv4);
 

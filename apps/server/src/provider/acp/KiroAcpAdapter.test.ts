@@ -616,62 +616,66 @@ it.effect("emits a context-window token-usage event from ACP usage updates", () 
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("spawns with the selected effort and respawns when effort changes mid-thread", () =>
-  Effect.gen(function* () {
-    const provider = ProviderDriverKind.make("kiro");
-    const instanceId = ProviderInstanceId.make(provider);
-    const threadId = ThreadId.make("kiro-acp-effort-spawn-and-respawn");
-    const cancelCalled = yield* Deferred.make<void>();
-    const runtime = makeFakeAcpRuntime({ cancelCalled });
-    const spawnedEfforts: Array<string | undefined> = [];
+it.effect(
+  "spawns with the selected effort and does NOT respawn on a mid-thread effort change",
+  () =>
+    Effect.gen(function* () {
+      const provider = ProviderDriverKind.make("kiro");
+      const instanceId = ProviderInstanceId.make(provider);
+      const threadId = ThreadId.make("kiro-acp-effort-spawn-and-respawn");
+      const cancelCalled = yield* Deferred.make<void>();
+      const runtime = makeFakeAcpRuntime({ cancelCalled });
+      const spawnedEfforts: Array<string | undefined> = [];
 
-    const adapter = yield* makeKiroAcpAdapter({
-      provider,
-      runtimeLabel: "Kiro",
-      makeRuntime: (input) =>
-        Effect.sync(() => {
-          spawnedEfforts.push(input.effort);
-          return runtime;
-        }),
-    });
+      const adapter = yield* makeKiroAcpAdapter({
+        provider,
+        runtimeLabel: "Kiro",
+        makeRuntime: (input) =>
+          Effect.sync(() => {
+            spawnedEfforts.push(input.effort);
+            return runtime;
+          }),
+      });
 
-    yield* adapter.startSession({
-      threadId,
-      provider,
-      cwd: process.cwd(),
-      runtimeMode: "full-access",
-      modelSelection: {
-        instanceId,
-        model: "auto",
-        options: [{ id: "effort", value: "high" }],
-      },
-    });
+      yield* adapter.startSession({
+        threadId,
+        provider,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: {
+          instanceId,
+          model: "auto",
+          options: [{ id: "effort", value: "high" }],
+        },
+      });
 
-    // Same effort on the next turn must NOT respawn the ACP process.
-    yield* adapter.sendTurn({
-      threadId,
-      input: "first",
-      modelSelection: {
-        instanceId,
-        model: "auto",
-        options: [{ id: "effort", value: "high" }],
-      },
-    });
+      // Same effort on the next turn must NOT respawn the ACP process.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "first",
+        modelSelection: {
+          instanceId,
+          model: "auto",
+          options: [{ id: "effort", value: "high" }],
+        },
+      });
 
-    // Changing effort mid-thread respawns with the new --effort level.
-    yield* adapter.sendTurn({
-      threadId,
-      input: "second",
-      modelSelection: {
-        instanceId,
-        model: "auto",
-        options: [{ id: "effort", value: "max" }],
-      },
-    });
+      // Changing effort mid-thread must NOT respawn the session: effort is a
+      // spawn-only flag, and respawning mid-conversation tore down the in-flight
+      // turn (duplicated/dead output). The new level applies on the next session.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "second",
+        modelSelection: {
+          instanceId,
+          model: "auto",
+          options: [{ id: "effort", value: "max" }],
+        },
+      });
 
-    assert.deepEqual(spawnedEfforts, ["high", "max"]);
-    yield* adapter.stopSession(threadId);
-  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+      assert.deepEqual(spawnedEfforts, ["high"]);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
 it.effect("issues session/set_mode for the selected Kiro agent at start and per turn", () =>
