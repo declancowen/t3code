@@ -40,11 +40,15 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import { makeKiroContinuationGroupKey, makeKiroEnvironment } from "./KiroHome.ts";
+import { makeKiroLatestVersionSource } from "../kiroLatestVersion.ts";
 
 const decodeKiroSettings = Schema.decodeSync(KiroSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("kiro");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+// Kiro CLI ships outside npm, so update detection reads its release manifest
+// (the same index `kiro-cli update` consults) instead of the npm registry.
+const KIRO_LATEST_VERSION_SOURCE = makeKiroLatestVersionSource();
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
@@ -52,6 +56,7 @@ const UPDATE = makeStaticProviderMaintenanceResolver(
     updateExecutable: "kiro-cli",
     updateArgs: ["update", "--non-interactive"],
     updateLockKey: "kiro-cli",
+    ...(KIRO_LATEST_VERSION_SOURCE ? { latestVersionSource: KIRO_LATEST_VERSION_SOURCE } : {}),
   }),
 );
 

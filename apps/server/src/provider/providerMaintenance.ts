@@ -16,10 +16,33 @@ const LATEST_VERSION_CACHE_TTL_MS = 60 * 60 * 1_000;
 const LATEST_VERSION_TIMEOUT_MS = 4_000;
 const PROVIDER_UPDATE_ACTION_TOAST_MESSAGE = "Install the update now or review provider settings.";
 
+/**
+ * A provider-specific source for the latest available version.
+ *
+ * The npm registry path (driven by {@link ProviderMaintenanceCapabilities.packageName})
+ * remains the default for package-managed providers. Providers distributed
+ * outside npm (e.g. Kiro CLI, which ships through its own release manifest)
+ * supply a custom source instead so version advisories still detect updates.
+ *
+ * `cacheKey` namespaces the shared latest-version cache; `fetchLatestVersion`
+ * performs the actual lookup and must resolve to `null` (never fail) when the
+ * latest version cannot be determined.
+ */
+export interface ProviderLatestVersionSource {
+  readonly cacheKey: string;
+  readonly fetchLatestVersion: Effect.Effect<string | null, never, HttpClient.HttpClient>;
+}
+
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  /**
+   * Optional non-npm latest-version source. Omitted for npm package-managed
+   * providers so their capabilities object keeps its `{ provider, packageName,
+   * update }` shape and the npm `packageName` lookup remains the default path.
+   */
+  readonly latestVersionSource?: ProviderLatestVersionSource;
 }
 
 export interface ProviderMaintenanceCommandAction {
@@ -78,6 +101,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
+  readonly latestVersionSource?: ProviderLatestVersionSource;
 }): ProviderMaintenanceCapabilities {
   const update =
     input.updateExecutable === null || input.updateLockKey === null
@@ -92,6 +116,7 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
+    ...(input.latestVersionSource ? { latestVersionSource: input.latestVersionSource } : {}),
   };
 }
 
@@ -422,26 +447,44 @@ const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (pack
   return payload ? nonEmptyString(payload.version) : null;
 });
 
-export const resolveLatestProviderVersion = Effect.fn("resolveLatestProviderVersion")(function* (
-  maintenanceCapabilities: ProviderMaintenanceCapabilities,
-) {
-  const packageName = maintenanceCapabilities.packageName;
-  if (!packageName) {
-    return null;
-  }
-
-  const cached = latestVersionCache.get(packageName);
+const fetchCachedLatestVersion = Effect.fn("fetchCachedLatestVersion")(function* (input: {
+  readonly cacheKey: string;
+  readonly fetch: Effect.Effect<string | null, never, HttpClient.HttpClient>;
+}) {
+  const cached = latestVersionCache.get(input.cacheKey);
   const now = DateTime.toEpochMillis(yield* DateTime.now);
   if (cached && cached.expiresAt > now) {
     return cached.version;
   }
 
-  const version = yield* fetchNpmLatestVersion(packageName);
-  latestVersionCache.set(packageName, {
+  const version = yield* input.fetch;
+  latestVersionCache.set(input.cacheKey, {
     expiresAt: now + LATEST_VERSION_CACHE_TTL_MS,
     version,
   });
   return version;
+});
+
+export const resolveLatestProviderVersion = Effect.fn("resolveLatestProviderVersion")(function* (
+  maintenanceCapabilities: ProviderMaintenanceCapabilities,
+) {
+  const source = maintenanceCapabilities.latestVersionSource;
+  if (source) {
+    return yield* fetchCachedLatestVersion({
+      cacheKey: source.cacheKey,
+      fetch: source.fetchLatestVersion,
+    });
+  }
+
+  const packageName = maintenanceCapabilities.packageName;
+  if (!packageName) {
+    return null;
+  }
+
+  return yield* fetchCachedLatestVersion({
+    cacheKey: `npm:${packageName}`,
+    fetch: fetchNpmLatestVersion(packageName),
+  });
 });
 
 export const enrichProviderSnapshotWithVersionAdvisory = Effect.fn(

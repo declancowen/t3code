@@ -7,6 +7,9 @@ import path from "node:path";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import {
   clearLatestProviderVersionCacheForTests,
   createProviderVersionAdvisory,
@@ -14,8 +17,16 @@ import {
   makeProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
   normalizeCommandPath,
+  resolveLatestProviderVersion,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "./providerMaintenance.ts";
+
+const StubHttpClientLive = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
+  ),
+);
 
 const driver = (value: string) => ProviderDriverKind.make(value);
 const makeTempDir = (name: string) =>
@@ -487,4 +498,49 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       update: null,
     });
   });
+
+  it.effect("resolves the latest version from a custom latestVersionSource instead of npm", () =>
+    resolveLatestProviderVersion(
+      makeProviderMaintenanceCapabilities({
+        provider: driver("customSourceTool"),
+        packageName: null,
+        updateExecutable: "custom-source-tool",
+        updateArgs: ["update"],
+        updateLockKey: "custom-source-tool",
+        latestVersionSource: {
+          cacheKey: "custom-source-tool:test",
+          fetchLatestVersion: Effect.succeed("3.2.1"),
+        },
+      }),
+    ).pipe(
+      Effect.tap((version) => Effect.sync(() => expect(version).toBe("3.2.1"))),
+      Effect.provide(StubHttpClientLive),
+    ),
+  );
+
+  it.effect("caches the custom latestVersionSource result by its cache key", () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make(0);
+      const capabilities = makeProviderMaintenanceCapabilities({
+        provider: driver("cachedSourceTool"),
+        packageName: null,
+        updateExecutable: "cached-source-tool",
+        updateArgs: ["update"],
+        updateLockKey: "cached-source-tool",
+        latestVersionSource: {
+          cacheKey: "cached-source-tool:test",
+          fetchLatestVersion: Ref.updateAndGet(calls, (count) => count + 1).pipe(
+            Effect.as("4.5.6"),
+          ),
+        },
+      });
+
+      const first = yield* resolveLatestProviderVersion(capabilities);
+      const second = yield* resolveLatestProviderVersion(capabilities);
+
+      expect(first).toBe("4.5.6");
+      expect(second).toBe("4.5.6");
+      expect(yield* Ref.get(calls)).toBe(1);
+    }).pipe(Effect.provide(StubHttpClientLive)),
+  );
 });
