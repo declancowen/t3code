@@ -1768,12 +1768,25 @@ export default function ChatView(props: ChatViewProps) {
       return serverMessagesWithPreviewHandoff;
     }
     const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
-    const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+    // Messages parked in the managed queue render in the pinned QueuedMessagesBar,
+    // not inline in the timeline. Drop their optimistic echoes so a queued message
+    // doesn't appear twice (inline + pinned). On dispatch the queued entry becomes a
+    // real message-sent with the same id and a dispatch-time timestamp, so it
+    // re-enters the timeline at the correct (bottom) position.
+    const queuedMessageIds = new Set((activeThread?.queuedMessages ?? []).map((entry) => entry.id));
+    const pendingMessages = optimisticUserMessages.filter(
+      (message) => !serverIds.has(message.id) && !queuedMessageIds.has(message.id),
+    );
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  }, [
+    serverMessages,
+    attachmentPreviewHandoffByMessageId,
+    optimisticUserMessages,
+    activeThread?.queuedMessages,
+  ]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
@@ -2551,17 +2564,27 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     if (!activeThread?.id) return;
-    if (activeThread.messages.length === 0) {
+    if (activeThread.messages.length === 0 && (activeThread.queuedMessages?.length ?? 0) === 0) {
       return;
     }
     const serverIds = new Set(activeThread.messages.map((message) => message.id));
-    const removedMessages = optimisticUserMessages.filter((message) => serverIds.has(message.id));
+    // Once a message is accepted by the server — either materialized in the
+    // timeline (message-sent) or parked in the managed queue (message-queued) —
+    // the optimistic echo has done its job and must be pruned. Otherwise a queued
+    // message's echo lingers in local state and re-appears inline the moment the
+    // message leaves the queue (delete or dispatch), since it is no longer hidden
+    // by the queued-id timeline filter.
+    const acceptedIds = new Set(serverIds);
+    for (const queued of activeThread.queuedMessages ?? []) {
+      acceptedIds.add(queued.id);
+    }
+    const removedMessages = optimisticUserMessages.filter((message) => acceptedIds.has(message.id));
     if (removedMessages.length === 0) {
       return;
     }
     const timer = window.setTimeout(() => {
       setOptimisticUserMessages((existing) =>
-        existing.filter((message) => !serverIds.has(message.id)),
+        existing.filter((message) => !acceptedIds.has(message.id)),
       );
     }, 0);
     for (const removedMessage of removedMessages) {
@@ -2575,7 +2598,13 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    activeThread?.queuedMessages,
+    handoffAttachmentPreviews,
+    optimisticUserMessages,
+  ]);
 
   useEffect(() => {
     setOptimisticUserMessages((existing) => {

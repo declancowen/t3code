@@ -1341,12 +1341,19 @@ const make = Effect.gen(function* () {
           });
 
           // Managed queue: the turn just closed and the session is idle, so poke
-          // the dispatcher to drain the next queued message. The decider produces
-          // no events when the queue is empty / a turn is active, and the engine
-          // rejects no-event commands — that benign outcome is ignored here.
+          // the dispatcher to drain the next queued message. Only drain on a
+          // genuine completion — if the turn was cancelled/interrupted/failed,
+          // leave queued messages pinned so a cancel does not silently kick off
+          // the next queued turn (the user can delete or keep them). The decider
+          // produces no events when the queue is empty / a turn is active, and the
+          // engine rejects no-event commands — that benign outcome is ignored here.
           // The dispatch turns into a real turn-start, so execution still goes
           // through the adapter's session/prompt — orchestration owns only ordering.
-          if (event.type === "turn.completed" && process.env.T3CODE_MANAGED_QUEUE === "1") {
+          if (
+            event.type === "turn.completed" &&
+            process.env.T3CODE_MANAGED_QUEUE === "1" &&
+            normalizeRuntimeTurnState(event.payload.state) === "completed"
+          ) {
             yield* orchestrationEngine
               .dispatch({
                 type: "thread.queued-message.dispatch",
