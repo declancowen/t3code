@@ -399,7 +399,7 @@ it.effect("serializes overlapping sendTurn calls into ordered prompts", () =>
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("discards turns queued behind an interrupted prompt", () =>
+it.effect("runs turns queued behind an interrupted prompt (never discards them)", () =>
   Effect.gen(function* () {
     const provider = ProviderDriverKind.make("kiro");
     const threadId = ThreadId.make("kiro-acp-discard-queued-on-interrupt");
@@ -441,14 +441,15 @@ it.effect("discards turns queued behind an interrupted prompt", () =>
       .pipe(Effect.forkChild);
     yield* Effect.yieldNow;
 
-    // Stop cancels the active turn and discards the queued one.
+    // Stop cancels the active turn, but the queued message is preserved and
+    // runs once the cancelled turn resolves — it is never discarded.
     yield* adapter.interruptTurn(threadId).pipe(Effect.timeout("1 second"));
     yield* Deferred.succeed(firstResponse, { stopReason: "cancelled" });
     yield* Fiber.join(firstFiber);
     yield* Fiber.join(queuedFiber).pipe(Effect.timeout("2 seconds"));
 
-    // The queued turn must never reach the CLI after an explicit stop.
-    assert.equal(promptCallCount, 1);
+    // The queued turn must still reach the CLI after an interrupt.
+    assert.equal(promptCallCount, 2);
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );

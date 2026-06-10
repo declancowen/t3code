@@ -59,6 +59,7 @@ import {
 import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import type { AcpSessionRuntimeOptions } from "./AcpSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
+import { kiroEffortFromSelections } from "../kiroEffort.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -95,6 +96,12 @@ export interface KiroAcpAdapterOptions {
       readonly cwd: string;
       readonly resumeSessionId?: string;
       readonly clientInfo: { readonly name: string; readonly version: string };
+      /**
+       * Initial reasoning effort level to spawn the runtime with. Applied via
+       * the agent CLI's spawn flag (kiro-cli `acp --effort`) since there is no
+       * in-session ACP method for effort.
+       */
+      readonly effort?: string;
     } & Pick<AcpSessionRuntimeOptions, "requestLogger" | "protocolLogging">,
   ) => Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope>;
 }
@@ -115,6 +122,12 @@ interface StandardAcpSessionContext {
   readonly acp: AcpSessionRuntimeShape;
   readonly acpSessionId: string;
   readonly supportsImagePrompts: boolean;
+  /**
+   * Reasoning effort level the underlying ACP process was spawned with. kiro-cli
+   * accepts effort only as a spawn flag, so changing effort mid-thread requires
+   * respawning the session (see `sendTurn`). Tracked here to detect changes.
+   */
+  effort: string | undefined;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -130,8 +143,6 @@ interface StandardAcpSessionContext {
   // Serializes `session/prompt` calls for this session so mid-turn follow-ups run
   // as ordered real prompts (kiro-cli runs one prompt at a time).
   readonly promptLock: Semaphore.Semaphore;
-  // Bumped by interruptTurn; turns queued before the bump are discarded.
-  generation: number;
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -573,6 +584,10 @@ export function makeKiroAcpAdapter(
             input.modelSelection?.instanceId === boundInstanceId
               ? input.modelSelection.model
               : undefined;
+          const selectedEffort =
+            input.modelSelection?.instanceId === boundInstanceId
+              ? kiroEffortFromSelections(input.modelSelection.options)
+              : undefined;
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing);
@@ -598,6 +613,7 @@ export function makeKiroAcpAdapter(
               childProcessSpawner,
               cwd,
               ...(resumeSessionId ? { resumeSessionId } : {}),
+              ...(selectedEffort ? { effort: selectedEffort } : {}),
               clientInfo: { name: "t3-code", version: "0.0.0" },
               ...acpNativeLoggers,
             })
@@ -723,6 +739,7 @@ export function makeKiroAcpAdapter(
             acp,
             acpSessionId: started.sessionId,
             supportsImagePrompts: supportsImagePromptContent(started.initializeResult),
+            effort: selectedEffort,
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
@@ -732,7 +749,6 @@ export function makeKiroAcpAdapter(
             activePrompt: undefined,
             stopped: false,
             promptLock,
-            generation: 0,
           };
 
           const nf = yield* Stream.runDrain(
@@ -859,12 +875,35 @@ export function makeKiroAcpAdapter(
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
+        // kiro-cli accepts the reasoning effort level only as a spawn flag
+        // (`kiro-cli acp --effort`); there is no in-session ACP method for it.
+        // So a mid-thread effort change is applied by respawning the ACP session
+        // and resuming the same conversation, mirroring how the model selector
+        // switches in-session but via a fresh process. Done before acquiring the
+        // prompt lock so we never restart underneath an in-flight prompt.
+        const requestedEffort =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? kiroEffortFromSelections(input.modelSelection.options)
+            : undefined;
+        const current = sessions.get(input.threadId);
+        if (
+          current &&
+          !current.stopped &&
+          requestedEffort !== undefined &&
+          requestedEffort !== current.effort
+        ) {
+          yield* startSession({
+            threadId: input.threadId,
+            provider,
+            ...(current.session.cwd ? { cwd: current.session.cwd } : {}),
+            runtimeMode: current.session.runtimeMode,
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+            ...(current.session.resumeCursor ? { resumeCursor: current.session.resumeCursor } : {}),
+          });
+        }
+
         const ctx = yield* requireSession(input.threadId);
         const turnId = TurnId.make(yield* randomUUIDv4);
-        // Capture the generation at submit time. An explicit interrupt bumps
-        // ctx.generation, so any turns still queued behind the active prompt are
-        // discarded instead of firing after the user pressed stop.
-        const generationAtSubmit = ctx.generation;
 
         // Serialize every turn on a per-session prompt lock. kiro-cli runs one
         // prompt per session at a time, and its ACP `_message/send` does NOT inject
@@ -873,13 +912,15 @@ export function makeKiroAcpAdapter(
         // attachments — waits its turn here and is submitted as a real
         // `session/prompt`, in arrival order, with nothing dropped. The prompt await
         // holds the permit; interrupt does not take this lock, so stop is never
-        // blocked behind a running turn.
+        // blocked behind a running turn. Interrupt cancels only the active turn;
+        // messages already queued are preserved and run in order — never discarded.
         return yield* ctx.promptLock.withPermit(
           Effect.gen(function* () {
-            if (ctx.stopped || ctx.generation !== generationAtSubmit) {
-              // Superseded by an explicit stop while queued: emit a terminal
-              // cancelled lifecycle so the UI does not show it perpetually
-              // "running", and never contact the CLI.
+            if (ctx.stopped) {
+              // The session was torn down while this turn waited in the queue
+              // (e.g. force-terminate after a genuinely stuck turn). Emit a
+              // terminal cancelled lifecycle so the UI does not show it
+              // perpetually "running", and never contact the CLI.
               yield* offerRuntimeEvent({
                 type: "turn.started",
                 ...(yield* makeEventStamp()),
@@ -1011,9 +1052,9 @@ export function makeKiroAcpAdapter(
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        // Discard any turns still queued behind the active prompt so they do not
-        // fire after the user pressed stop.
-        ctx.generation += 1;
+        // Interrupt cancels only the active turn. Messages already queued behind
+        // it are intentionally preserved and run in order once the active turn
+        // resolves — we never silently discard a message the user submitted.
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         const interruptedTurnId = ctx.activePrompt?.turnId;

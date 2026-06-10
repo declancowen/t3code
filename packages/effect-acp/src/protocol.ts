@@ -132,6 +132,25 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     })}\n`;
   };
 
+  // ACP client→agent notifications (e.g. `session/cancel`) are modeled by the
+  // RPC layer as a Request with an empty id. Encoded generically they go on the
+  // wire as a JSON-RPC *request* carrying `"id":""`, which strict agents reject
+  // (kiro-cli replies `-32601 Method not found` because it only registers a
+  // notification handler for these methods). Emit them as true JSON-RPC
+  // notifications — no id — so cancel and friends are actually honored.
+  const encodeClientNotification = (
+    message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
+  ): string | undefined => {
+    if (message._tag !== "Request" || message.id !== "") {
+      return undefined;
+    }
+    return `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: message.tag,
+      params: message.payload,
+    })}\n`;
+  };
+
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
   ) {
@@ -144,6 +163,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     const encoded = yield* Effect.try({
       try: () =>
         (message._tag === "Exit" ? encodeNonNumericExit(message) : undefined) ??
+        encodeClientNotification(message) ??
         parser.encode(message),
       catch: (cause) =>
         new AcpError.AcpProtocolParseError({
