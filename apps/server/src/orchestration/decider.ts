@@ -833,6 +833,81 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.queued-message.dispatch": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const head = targetThread.queuedMessages.find((entry) => entry.status === "queued");
+      const turnActive =
+        targetThread.session !== null &&
+        targetThread.session.status !== "stopped" &&
+        targetThread.session.activeTurnId !== null;
+      // Nothing to drain, or a turn is still running — no-op. The reactor pokes
+      // this again on the next turn completion.
+      if (!head || turnActive) {
+        return [];
+      }
+      // Dispatch the FIFO head as a real turn: remove it from the queue, record
+      // the user message, and request the turn. Execution still flows through
+      // the adapter's real session/prompt (one-per-session), preserving the CLI
+      // semantics — orchestration only owns the ordering/visibility.
+      const removedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.queued-message-removed",
+        payload: {
+          threadId: command.threadId,
+          messageId: head.id,
+          createdAt: command.createdAt,
+        },
+      };
+      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: head.id,
+          role: "user",
+          text: head.text,
+          ...(head.attachments !== undefined ? { attachments: head.attachments } : {}),
+          turnId: null,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+      const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: userMessageEvent.eventId,
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: head.id,
+          modelSelection: targetThread.modelSelection,
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      };
+      return [removedEvent, userMessageEvent, turnStartRequestedEvent];
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };
