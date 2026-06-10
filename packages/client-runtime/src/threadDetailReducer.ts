@@ -7,6 +7,7 @@ import type {
   OrchestrationEvent,
   OrchestrationLatestTurn,
   OrchestrationMessage,
+  OrchestrationQueuedMessage,
   OrchestrationThread,
   OrchestrationThreadActivity,
   TurnId,
@@ -194,6 +195,64 @@ export function applyThreadDetailEvent(
         },
       };
     }
+
+    // ── Managed queue ───────────────────────────────────────────────
+    case "thread.message-queued": {
+      if (thread.queuedMessages.some((entry) => entry.id === event.payload.messageId)) {
+        return { kind: "unchanged" };
+      }
+      const queued: OrchestrationQueuedMessage = {
+        id: event.payload.messageId,
+        text: event.payload.text,
+        ...(event.payload.attachments !== undefined
+          ? { attachments: event.payload.attachments }
+          : {}),
+        status: "queued",
+        createdAt: event.payload.createdAt,
+        updatedAt: event.payload.createdAt,
+      };
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          queuedMessages: [...thread.queuedMessages, queued],
+          updatedAt: event.occurredAt,
+        },
+      };
+    }
+
+    case "thread.queued-message-removed":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          queuedMessages: thread.queuedMessages.filter(
+            (entry) => entry.id !== event.payload.messageId,
+          ),
+          updatedAt: event.occurredAt,
+        },
+      };
+
+    case "thread.queued-message-edited":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          queuedMessages: Arr.map(thread.queuedMessages, (entry) =>
+            entry.id === event.payload.messageId && entry.status === "queued"
+              ? {
+                  ...entry,
+                  text: event.payload.text,
+                  ...(event.payload.attachments !== undefined
+                    ? { attachments: event.payload.attachments }
+                    : {}),
+                  updatedAt: event.payload.createdAt,
+                }
+              : entry,
+          ),
+          updatedAt: event.occurredAt,
+        },
+      };
 
     // ── Messages ────────────────────────────────────────────────────
     case "thread.message-sent": {

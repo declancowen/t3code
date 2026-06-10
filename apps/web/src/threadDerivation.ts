@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
+const EMPTY_QUEUED: Thread["queuedMessages"] = [];
 const EMPTY_ACTIVITIES: Thread["activities"] = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_TURN_DIFF_SUMMARIES: TurnDiffSummary[] = [];
@@ -26,6 +27,7 @@ const threadCache = new WeakMap<
     session: ThreadSession | null;
     turnState: ThreadTurnState | undefined;
     messages: Thread["messages"];
+    queuedMessages: Thread["queuedMessages"];
     activities: Thread["activities"];
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
@@ -110,6 +112,7 @@ export function getThreadFromEnvironmentState(
   const session = state.threadSessionById[threadId] ?? null;
   const turnState = state.threadTurnStateById[threadId];
   const messages = selectThreadMessages(state, threadId);
+  const queuedMessages = state.queuedMessagesByThreadId[threadId] ?? EMPTY_QUEUED;
   const activities = selectThreadActivities(state, threadId);
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
@@ -120,6 +123,7 @@ export function getThreadFromEnvironmentState(
     cached.session === session &&
     cached.turnState === turnState &&
     cached.messages === messages &&
+    cached.queuedMessages === queuedMessages &&
     cached.activities === activities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries
@@ -133,6 +137,7 @@ export function getThreadFromEnvironmentState(
     latestTurn: turnState?.latestTurn ?? null,
     pendingSourceProposedPlan: turnState?.pendingSourceProposedPlan,
     messages,
+    queuedMessages,
     activities,
     proposedPlans,
     turnDiffSummaries,
@@ -142,6 +147,7 @@ export function getThreadFromEnvironmentState(
     session,
     turnState,
     messages,
+    queuedMessages,
     activities,
     proposedPlans,
     turnDiffSummaries,

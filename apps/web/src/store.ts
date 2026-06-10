@@ -5,6 +5,7 @@ import type {
   OrchestrationEvent,
   OrchestrationLatestTurn,
   OrchestrationMessage,
+  OrchestrationQueuedMessage,
   OrchestrationProposedPlan,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -77,6 +78,7 @@ export interface EnvironmentState {
   // ---------------------------------------------------------------------------
   messageIdsByThreadId: Record<ThreadId, MessageId[]>;
   messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
+  queuedMessagesByThreadId: Record<ThreadId, OrchestrationQueuedMessage[]>;
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   proposedPlanIdsByThreadId: Record<ThreadId, string[]>;
@@ -111,6 +113,7 @@ const initialEnvironmentState: EnvironmentState = {
   threadTurnStateById: {},
   messageIdsByThreadId: {},
   messageByThreadId: {},
+  queuedMessagesByThreadId: {},
   activityIdsByThreadId: {},
   activityByThreadId: {},
   proposedPlanIdsByThreadId: {},
@@ -248,6 +251,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     interactionMode: thread.interactionMode,
     session: thread.session ? mapSession(thread.session) : null,
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
+    queuedMessages: thread.queuedMessages.map((entry) => ({ ...entry })),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
@@ -638,6 +642,16 @@ function writeThreadState(
     };
   }
 
+  if (previousThread?.queuedMessages !== nextThread.queuedMessages) {
+    nextState = {
+      ...nextState,
+      queuedMessagesByThreadId: {
+        ...nextState.queuedMessagesByThreadId,
+        [nextThread.id]: nextThread.queuedMessages,
+      },
+    };
+  }
+
   if (previousThread?.activities !== nextThread.activities) {
     const nextActivitySlice = buildActivitySlice(nextThread);
     nextState = {
@@ -803,6 +817,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedTurnState, ...threadTurnStateById } = state.threadTurnStateById;
   const { [threadId]: _removedMessageIds, ...messageIdsByThreadId } = state.messageIdsByThreadId;
   const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
+  const { [threadId]: _removedQueued, ...queuedMessagesByThreadId } =
+    state.queuedMessagesByThreadId;
   const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
   const { [threadId]: _removedActivities, ...activityByThreadId } = state.activityByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
@@ -823,6 +839,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     threadTurnStateById,
     messageIdsByThreadId,
     messageByThreadId,
+    queuedMessagesByThreadId,
     activityIdsByThreadId,
     activityByThreadId,
     proposedPlanIdsByThreadId,
@@ -1369,6 +1386,57 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
     }
+
+    case "thread.message-queued":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (thread.queuedMessages.some((entry) => entry.id === event.payload.messageId)) {
+          return thread;
+        }
+        return {
+          ...thread,
+          queuedMessages: [
+            ...thread.queuedMessages,
+            {
+              id: event.payload.messageId,
+              text: event.payload.text,
+              ...(event.payload.attachments !== undefined
+                ? { attachments: event.payload.attachments }
+                : {}),
+              status: "queued" as const,
+              createdAt: event.payload.createdAt,
+              updatedAt: event.payload.createdAt,
+            },
+          ],
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.queued-message-removed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        queuedMessages: thread.queuedMessages.filter(
+          (entry) => entry.id !== event.payload.messageId,
+        ),
+        updatedAt: event.occurredAt,
+      }));
+
+    case "thread.queued-message-edited":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        queuedMessages: thread.queuedMessages.map((entry) =>
+          entry.id === event.payload.messageId && entry.status === "queued"
+            ? {
+                ...entry,
+                text: event.payload.text,
+                ...(event.payload.attachments !== undefined
+                  ? { attachments: event.payload.attachments }
+                  : {}),
+                updatedAt: event.payload.createdAt,
+              }
+            : entry,
+        ),
+        updatedAt: event.occurredAt,
+      }));
 
     case "thread.message-sent":
       return updateThreadState(state, event.payload.threadId, (thread) => {

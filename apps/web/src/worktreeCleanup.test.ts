@@ -21,6 +21,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],
+    queuedMessages: [],
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],

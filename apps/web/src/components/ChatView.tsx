@@ -148,6 +148,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { QueuedMessagesBar } from "./chat/QueuedMessagesBar";
 import { ChatHeader } from "./chat/ChatHeader";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -3157,6 +3158,38 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const onRemoveQueuedMessage = useCallback(
+    async (messageId: MessageId) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread) return;
+      await api.orchestration.dispatchCommand({
+        type: "thread.queued-message.remove",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        messageId,
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [activeThread, environmentId],
+  );
+
+  const onEditQueuedMessage = useCallback(
+    async (messageId: MessageId, text: string) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread) return;
+      await api.orchestration.dispatchCommand({
+        type: "thread.queued-message.edit",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        messageId,
+        text,
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [activeThread, environmentId],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       const api = readEnvironmentApi(environmentId);
@@ -3839,6 +3872,11 @@ export default function ChatView(props: ChatViewProps) {
             )}
           >
             <div className="relative isolate">
+              <QueuedMessagesBar
+                queued={activeThread?.queuedMessages ?? []}
+                onRemove={onRemoveQueuedMessage}
+                onEdit={onEditQueuedMessage}
+              />
               <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
               <div className="relative z-10">
                 <ChatComposer
