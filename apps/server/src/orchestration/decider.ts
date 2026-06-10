@@ -96,9 +96,15 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  queueEnabled = false,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  // Managed message-queue feature flag. When false (default), a message sent
+  // during an active turn behaves exactly as before (the adapter serializes it).
+  // When true, it is parked in the thread's visible queue (thread.message-queued)
+  // and dispatched FIFO on turn completion by the dispatch reactor.
+  readonly queueEnabled?: boolean;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandInvariantError | PlatformError.PlatformError,
@@ -415,6 +421,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
+      }
+      const turnActive =
+        targetThread.session !== null &&
+        targetThread.session.status !== "stopped" &&
+        targetThread.session.activeTurnId !== null;
+      // Managed queue: when enabled, park the message in the thread's visible
+      // queue if a turn is already running or messages are already queued
+      // (preserve FIFO). The dispatch reactor sends it as a real turn once the
+      // active turn completes. Plan-implementation turns are never queued.
+      if (
+        queueEnabled &&
+        sourceProposedPlan === undefined &&
+        (turnActive || targetThread.queuedMessages.length > 0)
+      ) {
+        return {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.message-queued",
+          payload: {
+            threadId: command.threadId,
+            messageId: command.message.messageId,
+            text: command.message.text,
+            ...(command.message.attachments.length > 0
+              ? { attachments: command.message.attachments }
+              : {}),
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
+            interactionMode: targetThread.interactionMode,
+            createdAt: command.createdAt,
+          },
+        };
       }
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
@@ -749,6 +791,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           activity: command.activity,
+        },
+      };
+    }
+
+    case "thread.queued-message.remove": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.queued-message-removed",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.queued-message.edit": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.queued-message-edited",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          text: command.text,
+          ...(command.attachments.length > 0 ? { attachments: command.attachments } : {}),
+          createdAt: command.createdAt,
         },
       };
     }

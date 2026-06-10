@@ -1187,6 +1187,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 archivedAt: row.archivedAt,
                 deletedAt: row.deletedAt,
                 messages: messagesByThread.get(row.threadId) ?? [],
+                // Queued messages are reduced live from the event stream + the
+                // projector read model; SQL cold-load materialization is a
+                // follow-up. Empty here means a fresh page load starts with an
+                // empty queue and fills from live events (the queue is transient).
+                queuedMessages: [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 activities: activitiesByThread.get(row.threadId) ?? [],
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
@@ -1385,6 +1390,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   archivedAt: row.archivedAt,
                   deletedAt: row.deletedAt,
                   messages: [],
+                  queuedMessages: [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: [],
                   checkpoints: [],

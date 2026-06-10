@@ -153,6 +153,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          // Managed message-queue feature flag (off by default). Toggle with
+          // T3CODE_MANAGED_QUEUE=1 and a server restart — no rebuild needed.
+          queueEnabled: process.env.T3CODE_MANAGED_QUEUE === "1",
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError((cause) =>

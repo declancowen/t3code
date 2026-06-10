@@ -225,6 +225,24 @@ export const OrchestrationMessage = Schema.Struct({
 });
 export type OrchestrationMessage = typeof OrchestrationMessage.Type;
 
+export const OrchestrationQueuedMessageStatus = Schema.Literals(["queued", "dispatching"]);
+export type OrchestrationQueuedMessageStatus = typeof OrchestrationQueuedMessageStatus.Type;
+
+// A user message accepted while a turn was active and parked in the thread's
+// pending queue. Owned by orchestration (not the adapter) so it is visible,
+// editable, removable, and survives session teardown until dispatched FIFO.
+export const OrchestrationQueuedMessage = Schema.Struct({
+  id: MessageId,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  status: OrchestrationQueuedMessageStatus.pipe(
+    Schema.withDecodingDefault(Effect.succeed("queued" as const)),
+  ),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationQueuedMessage = typeof OrchestrationQueuedMessage.Type;
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 
@@ -347,6 +365,9 @@ export const OrchestrationThread = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
+  queuedMessages: Schema.Array(OrchestrationQueuedMessage).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -612,6 +633,24 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadQueuedMessageRemoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-message.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadQueuedMessageEditCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-message.edit"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  attachments: Schema.Array(UploadChatAttachment),
+  createdAt: IsoDateTime,
+});
+
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
   commandId: CommandId,
@@ -658,6 +697,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadQueuedMessageRemoveCommand,
+  ThreadQueuedMessageEditCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -679,6 +720,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadQueuedMessageRemoveCommand,
+  ThreadQueuedMessageEditCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -782,6 +825,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.message-queued",
+  "thread.queued-message-removed",
+  "thread.queued-message-edited",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -906,6 +952,32 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadMessageQueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  modelSelection: Schema.optional(ModelSelection),
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadQueuedMessageRemovedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadQueuedMessageEditedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
   createdAt: IsoDateTime,
 });
 
@@ -1051,6 +1123,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.message-queued"),
+    payload: ThreadMessageQueuedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queued-message-removed"),
+    payload: ThreadQueuedMessageRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queued-message-edited"),
+    payload: ThreadQueuedMessageEditedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

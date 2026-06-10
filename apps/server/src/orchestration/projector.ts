@@ -2,6 +2,7 @@ import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3to
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
+  OrchestrationQueuedMessage,
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
@@ -21,6 +22,9 @@ import {
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
+  ThreadMessageQueuedPayload,
+  ThreadQueuedMessageRemovedPayload,
+  ThreadQueuedMessageEditedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnarchivedPayload,
   ThreadRevertedPayload,
@@ -413,6 +417,97 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.message-queued":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadMessageQueuedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        if (thread.queuedMessages.some((entry) => entry.id === payload.messageId)) {
+          return nextBase;
+        }
+        const queued: OrchestrationQueuedMessage = yield* decodeForEvent(
+          OrchestrationQueuedMessage,
+          {
+            id: payload.messageId,
+            text: payload.text,
+            ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
+            status: "queued",
+            createdAt: payload.createdAt,
+            updatedAt: payload.createdAt,
+          },
+          event.type,
+          "queuedMessage",
+        );
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queuedMessages: [...thread.queuedMessages, queued],
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.queued-message-removed":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadQueuedMessageRemovedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queuedMessages: thread.queuedMessages.filter((entry) => entry.id !== payload.messageId),
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.queued-message-edited":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadQueuedMessageEditedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        // Only a still-queued message can be edited (not one being dispatched).
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queuedMessages: thread.queuedMessages.map((entry) =>
+              entry.id === payload.messageId && entry.status === "queued"
+                ? {
+                    ...entry,
+                    text: payload.text,
+                    ...(payload.attachments !== undefined
+                      ? { attachments: payload.attachments }
+                      : {}),
+                    updatedAt: payload.createdAt,
+                  }
+                : entry,
+            ),
             updatedAt: event.occurredAt,
           }),
         };
