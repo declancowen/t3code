@@ -30,4 +30,31 @@ describe("buildKiroAcpSpawnInput", () => {
       env,
     });
   });
+
+  it("passes the initial effort level through the --effort spawn flag", () => {
+    expect(buildKiroAcpSpawnInput(undefined, "/repo", undefined, "xhigh")).toEqual({
+      command: "kiro-cli",
+      args: ["acp", "--effort", "xhigh"],
+      cwd: "/repo",
+    });
+  });
+
+  it("orders --agent before --effort and forwards both", () => {
+    expect(
+      buildKiroAcpSpawnInput(
+        { binaryPath: "kiro-cli", agentName: "builder" },
+        "/repo",
+        undefined,
+        "max",
+      ),
+    ).toEqual({
+      command: "kiro-cli",
+      args: ["acp", "--agent", "builder", "--effort", "max"],
+      cwd: "/repo",
+    });
+  });
+
+  it("omits --effort when no effort level is provided", () => {
+    expect(buildKiroAcpSpawnInput(undefined, "/repo", undefined, "   ").args).toEqual(["acp"]);
+  });
 });

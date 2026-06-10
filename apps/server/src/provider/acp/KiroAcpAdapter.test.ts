@@ -2,17 +2,20 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { AcpRequestError } from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { type ChatAttachment, ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import {
+  type ChatAttachment,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -399,7 +402,7 @@ it.effect("serializes overlapping sendTurn calls into ordered prompts", () =>
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
 
-it.effect("discards turns queued behind an interrupted prompt", () =>
+it.effect("runs turns queued behind an interrupted prompt (never discards them)", () =>
   Effect.gen(function* () {
     const provider = ProviderDriverKind.make("kiro");
     const threadId = ThreadId.make("kiro-acp-discard-queued-on-interrupt");
@@ -441,14 +444,15 @@ it.effect("discards turns queued behind an interrupted prompt", () =>
       .pipe(Effect.forkChild);
     yield* Effect.yieldNow;
 
-    // Stop cancels the active turn and discards the queued one.
+    // Stop cancels the active turn, but the queued message is preserved and
+    // runs once the cancelled turn resolves — it is never discarded.
     yield* adapter.interruptTurn(threadId).pipe(Effect.timeout("1 second"));
     yield* Deferred.succeed(firstResponse, { stopReason: "cancelled" });
     yield* Fiber.join(firstFiber);
     yield* Fiber.join(queuedFiber).pipe(Effect.timeout("2 seconds"));
 
-    // The queued turn must never reach the CLI after an explicit stop.
-    assert.equal(promptCallCount, 1);
+    // The queued turn must still reach the CLI after an interrupt.
+    assert.equal(promptCallCount, 2);
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
@@ -608,6 +612,113 @@ it.effect("emits a context-window token-usage event from ACP usage updates", () 
         maxTokens: 1_000_000,
       });
     }
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("spawns with the selected effort and respawns when effort changes mid-thread", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("kiro");
+    const instanceId = ProviderInstanceId.make(provider);
+    const threadId = ThreadId.make("kiro-acp-effort-spawn-and-respawn");
+    const cancelCalled = yield* Deferred.make<void>();
+    const runtime = makeFakeAcpRuntime({ cancelCalled });
+    const spawnedEfforts: Array<string | undefined> = [];
+
+    const adapter = yield* makeKiroAcpAdapter({
+      provider,
+      runtimeLabel: "Kiro",
+      makeRuntime: (input) =>
+        Effect.sync(() => {
+          spawnedEfforts.push(input.effort);
+          return runtime;
+        }),
+    });
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+      modelSelection: {
+        instanceId,
+        model: "auto",
+        options: [{ id: "effort", value: "high" }],
+      },
+    });
+
+    // Same effort on the next turn must NOT respawn the ACP process.
+    yield* adapter.sendTurn({
+      threadId,
+      input: "first",
+      modelSelection: {
+        instanceId,
+        model: "auto",
+        options: [{ id: "effort", value: "high" }],
+      },
+    });
+
+    // Changing effort mid-thread respawns with the new --effort level.
+    yield* adapter.sendTurn({
+      threadId,
+      input: "second",
+      modelSelection: {
+        instanceId,
+        model: "auto",
+        options: [{ id: "effort", value: "max" }],
+      },
+    });
+
+    assert.deepEqual(spawnedEfforts, ["high", "max"]);
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
+);
+
+it.effect("issues session/set_mode for the selected Kiro agent at start and per turn", () =>
+  Effect.gen(function* () {
+    const provider = ProviderDriverKind.make("kiro");
+    const instanceId = ProviderInstanceId.make(provider);
+    const threadId = ThreadId.make("kiro-acp-agent-mode-switch");
+    const cancelCalled = yield* Deferred.make<void>();
+    const base = makeFakeAcpRuntime({ cancelCalled });
+    const setModes: Array<string> = [];
+    const runtime: AcpSessionRuntimeShape = {
+      ...base,
+      setMode: (modeId: string) => {
+        setModes.push(modeId);
+        return Effect.succeed({} as EffectAcpSchema.SetSessionModeResponse);
+      },
+    };
+
+    const adapter = yield* makeKiroAcpAdapter({
+      provider,
+      runtimeLabel: "Kiro",
+      makeRuntime: () => Effect.succeed(runtime),
+    });
+
+    yield* adapter.startSession({
+      threadId,
+      provider,
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+      modelSelection: {
+        instanceId,
+        model: "auto",
+        options: [{ id: "agentMode", value: "kiro_planner" }],
+      },
+    });
+
+    yield* adapter.sendTurn({
+      threadId,
+      input: "hi",
+      modelSelection: {
+        instanceId,
+        model: "auto",
+        options: [{ id: "agentMode", value: "kiro_guide" }],
+      },
+    });
+
+    assert.deepEqual(setModes, ["kiro_planner", "kiro_guide"]);
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(standardAcpAdapterTestLayer)),
 );
