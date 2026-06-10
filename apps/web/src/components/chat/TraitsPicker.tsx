@@ -16,7 +16,7 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon, type LucideIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -157,13 +157,6 @@ function getTraitsSectionVisibility(input: {
   prompt: string;
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
-  /**
-   * When provided, only descriptors whose id is listed are rendered (and drive
-   * the trigger label / visibility). Persistence still writes the full option
-   * set, so splitting one model's descriptors across multiple pickers does not
-   * drop the values owned by the other pickers.
-   */
-  descriptorIds?: ReadonlyArray<string>;
 }) {
   const selected = getSelectedTraits(
     input.provider,
@@ -180,17 +173,6 @@ function getTraitsSectionVisibility(input: {
   const showContextWindow = selected.contextWindowDescriptor !== null;
   const showAgent = selected.agentDescriptor !== null;
 
-  const filterIds = input.descriptorIds;
-  const isVisible = (id: string) => filterIds === undefined || filterIds.includes(id);
-  const visibleSelectDescriptors = selected.selectDescriptors.filter((descriptor) =>
-    isVisible(descriptor.id),
-  );
-  const visibleBooleanDescriptors = selected.booleanDescriptors.filter((descriptor) =>
-    isVisible(descriptor.id),
-  );
-  const hasVisibleControls =
-    visibleSelectDescriptors.length > 0 || visibleBooleanDescriptors.length > 0;
-
   return {
     ...selected,
     showEffort,
@@ -198,9 +180,6 @@ function getTraitsSectionVisibility(input: {
     showFastMode,
     showContextWindow,
     showAgent,
-    visibleSelectDescriptors,
-    visibleBooleanDescriptors,
-    hasVisibleControls,
     hasAnyControls: showEffort || showThinking || showFastMode || showContextWindow || showAgent,
   };
 }
@@ -212,9 +191,8 @@ export function shouldRenderTraitsControls(input: {
   prompt: string;
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
-  descriptorIds?: ReadonlyArray<string>;
 }): boolean {
-  return getTraitsSectionVisibility(input).hasVisibleControls;
+  return getTraitsSectionVisibility(input).hasAnyControls;
 }
 
 export interface TraitsMenuContentProps {
@@ -226,17 +204,6 @@ export interface TraitsMenuContentProps {
   onPromptChange: (prompt: string) => void;
   modelOptions?: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
-  /**
-   * Restrict the rendered descriptors to these ids. Lets the composer split one
-   * model's descriptors across multiple sibling pickers (e.g. Kiro's Mode and
-   * Effort) while persistence keeps writing the full option set.
-   */
-  descriptorIds?: ReadonlyArray<string>;
-  /**
-   * Optional resolver for a Lucide icon to show beside a select option (and on
-   * the trigger for the current value). Used for Kiro's Build/Plan/Guide modes.
-   */
-  getOptionIcon?: (descriptorId: string, optionId: string) => LucideIcon | undefined;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
 }
@@ -250,8 +217,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   onPromptChange,
   modelOptions,
   allowPromptInjectedEffort = true,
-  descriptorIds,
-  getOptionIcon,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -275,12 +240,12 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   );
   const {
     descriptors,
-    visibleSelectDescriptors,
-    visibleBooleanDescriptors,
+    selectDescriptors,
+    booleanDescriptors,
     primarySelectDescriptor,
     ultrathinkPromptControlled,
     ultrathinkInBodyText,
-    hasVisibleControls,
+    hasAnyControls,
   } = getTraitsSectionVisibility({
     provider,
     models,
@@ -288,7 +253,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     prompt,
     modelOptions,
     allowPromptInjectedEffort,
-    ...(descriptorIds ? { descriptorIds } : {}),
   });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
@@ -315,13 +279,13 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     updateDescriptors(replaceDescriptorCurrentValue(descriptors, descriptor.id, value));
   };
 
-  if (!hasVisibleControls) {
+  if (!hasAnyControls) {
     return null;
   }
 
   return (
     <>
-      {visibleSelectDescriptors.map((descriptor, index) => (
+      {selectDescriptors.map((descriptor, index) => (
         <div key={descriptor.id}>
           {index > 0 ? <MenuDivider /> : null}
           <MenuGroup>
@@ -342,33 +306,23 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
               }
               onValueChange={(value) => handleSelectChange(descriptor, value)}
             >
-              {descriptor.options.map((option) => {
-                const OptionIcon = getOptionIcon?.(descriptor.id, option.id);
-                return (
-                  <MenuRadioItem
-                    key={option.id}
-                    value={option.id}
-                    disabled={ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id}
-                  >
-                    <span className="flex items-center gap-2">
-                      {OptionIcon ? (
-                        <OptionIcon aria-hidden="true" className="size-4 shrink-0 opacity-80" />
-                      ) : null}
-                      <span>
-                        {option.label}
-                        {option.isDefault ? " (default)" : ""}
-                      </span>
-                    </span>
-                  </MenuRadioItem>
-                );
-              })}
+              {descriptor.options.map((option) => (
+                <MenuRadioItem
+                  key={option.id}
+                  value={option.id}
+                  disabled={ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id}
+                >
+                  {option.label}
+                  {option.isDefault ? " (default)" : ""}
+                </MenuRadioItem>
+              ))}
             </MenuRadioGroup>
           </MenuGroup>
         </div>
       ))}
-      {visibleBooleanDescriptors.map((descriptor, index) => (
+      {booleanDescriptors.map((descriptor, index) => (
         <div key={descriptor.id}>
-          {index > 0 || visibleSelectDescriptors.length > 0 ? <MenuDivider /> : null}
+          {index > 0 || selectDescriptors.length > 0 ? <MenuDivider /> : null}
           <MenuGroup>
             <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
               {descriptor.label}
@@ -400,27 +354,20 @@ export const TraitsPicker = memo(function TraitsPicker({
   onPromptChange,
   modelOptions,
   allowPromptInjectedEffort = true,
-  descriptorIds,
-  getOptionIcon,
   triggerVariant,
   triggerClassName,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const {
-    visibleSelectDescriptors,
-    visibleBooleanDescriptors,
-    primarySelectDescriptor,
-    ultrathinkPromptControlled,
-  } = getTraitsSectionVisibility({
-    provider,
-    models,
-    model,
-    prompt,
-    modelOptions,
-    allowPromptInjectedEffort,
-    ...(descriptorIds ? { descriptorIds } : {}),
-  });
+  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled } =
+    getTraitsSectionVisibility({
+      provider,
+      models,
+      model,
+      prompt,
+      modelOptions,
+      allowPromptInjectedEffort,
+    });
   if (
     !shouldRenderTraitsControls({
       provider,
@@ -429,14 +376,13 @@ export const TraitsPicker = memo(function TraitsPicker({
       prompt,
       modelOptions,
       allowPromptInjectedEffort,
-      ...(descriptorIds ? { descriptorIds } : {}),
     })
   ) {
     return null;
   }
 
   const triggerLabels: Array<string> = [];
-  for (const descriptor of [...visibleSelectDescriptors, ...visibleBooleanDescriptors]) {
+  for (const descriptor of descriptors) {
     const label =
       ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
         ? "Ultrathink"
@@ -452,22 +398,6 @@ export const TraitsPicker = memo(function TraitsPicker({
     }
   }
   const triggerLabel = triggerLabels.join(" · ");
-
-  // Icon for the trigger: the current value of the first visible select
-  // descriptor that has a resolvable icon (e.g. Kiro's active agent mode).
-  let TriggerIcon: LucideIcon | undefined;
-  if (getOptionIcon) {
-    for (const descriptor of visibleSelectDescriptors) {
-      const currentValue = getProviderOptionCurrentValue(descriptor);
-      if (typeof currentValue === "string") {
-        const icon = getOptionIcon(descriptor.id, currentValue);
-        if (icon) {
-          TriggerIcon = icon;
-          break;
-        }
-      }
-    }
-  }
 
   const isCodexStyle = provider === "codex";
 
@@ -494,17 +424,11 @@ export const TraitsPicker = memo(function TraitsPicker({
       >
         {isCodexStyle ? (
           <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-            {TriggerIcon ? (
-              <TriggerIcon aria-hidden="true" className="size-3.5 shrink-0 opacity-70" />
-            ) : null}
             {triggerLabel}
             <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
           </span>
         ) : (
           <>
-            {TriggerIcon ? (
-              <TriggerIcon aria-hidden="true" className="size-3.5 shrink-0 opacity-70" />
-            ) : null}
             <span>{triggerLabel}</span>
             <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
           </>
@@ -520,8 +444,6 @@ export const TraitsPicker = memo(function TraitsPicker({
           onPromptChange={onPromptChange}
           modelOptions={modelOptions}
           allowPromptInjectedEffort={allowPromptInjectedEffort}
-          {...(descriptorIds ? { descriptorIds } : {})}
-          {...(getOptionIcon ? { getOptionIcon } : {})}
           {...persistence}
         />
       </MenuPopup>

@@ -10,7 +10,6 @@ import {
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
-import { shouldRenderTraitsControls } from "./TraitsPicker";
 
 // Everything in composerProviderState is now data-driven by the model's
 // optionDescriptors, so these tests use a single synthetic provider/model and
@@ -239,35 +238,5 @@ describe("provider traits render guards", () => {
 
     expect(renderProviderTraitsPicker(args)).toBeNull();
     expect(renderProviderTraitsMenuContent(args)).toBeNull();
-  });
-});
-
-describe("shouldRenderTraitsControls descriptorIds filter", () => {
-  const models = modelWith([
-    selectDescriptor("agentMode", [
-      { id: "kiro_default", label: "Build", isDefault: true },
-      { id: "kiro_planner", label: "Plan" },
-    ]),
-    selectDescriptor("effort", [{ id: "high", label: "High", isDefault: true }]),
-  ]);
-  const base = {
-    provider: PROVIDER,
-    models,
-    model: MODEL,
-    prompt: "",
-    modelOptions: undefined,
-  };
-
-  it("renders the full combined control when no filter is given", () => {
-    expect(shouldRenderTraitsControls(base)).toBe(true);
-  });
-
-  it("renders each descriptor group independently when filtered", () => {
-    expect(shouldRenderTraitsControls({ ...base, descriptorIds: ["agentMode"] })).toBe(true);
-    expect(shouldRenderTraitsControls({ ...base, descriptorIds: ["effort"] })).toBe(true);
-  });
-
-  it("does not render when the filter matches no descriptor", () => {
-    expect(shouldRenderTraitsControls({ ...base, descriptorIds: ["nonexistent"] })).toBe(false);
   });
 });

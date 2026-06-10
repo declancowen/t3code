@@ -299,51 +299,6 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
-  it.effect("issues session/set_mode when setModeStrategy is session-set-mode", () => {
-    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
-    return Effect.gen(function* () {
-      const runtime = yield* AcpSessionRuntime;
-      yield* runtime.start();
-
-      // Differs from the mock's initial mode ("ask") so a request is issued.
-      yield* runtime.setMode("code");
-
-      expect(
-        requestEvents.some(
-          (event) => event.method === "session/set_mode" && event.status === "started",
-        ),
-      ).toBe(true);
-      expect(
-        requestEvents.some(
-          (event) => event.method === "session/set_mode" && event.status === "succeeded",
-        ),
-      ).toBe(true);
-      // The session-set-mode strategy must NOT fall back to set_config_option.
-      expect(requestEvents.some((event) => event.method === "session/set_config_option")).toBe(
-        false,
-      );
-    }).pipe(
-      Effect.provide(
-        AcpSessionRuntime.layer({
-          authMethodId: "test",
-          setModeStrategy: "session-set-mode",
-          spawn: {
-            command: mockAgentCommand,
-            args: mockAgentArgs,
-          },
-          cwd: process.cwd(),
-          clientInfo: { name: "t3-test", version: "0.0.0" },
-          requestLogger: (event) =>
-            Effect.sync(() => {
-              requestEvents.push(event);
-            }),
-        }),
-      ),
-      Effect.scoped,
-      Effect.provide(NodeServices.layer),
-    );
-  });
-
   it.effect("emits low-level ACP protocol logs for raw and decoded messages", () => {
     const protocolEvents: Array<EffectAcpProtocol.AcpProtocolLogEvent> = [];
     return Effect.gen(function* () {

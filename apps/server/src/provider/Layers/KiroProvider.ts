@@ -1,5 +1,6 @@
 import type {
   KiroSettings,
+  ModelCapabilities,
   ServerProviderAuth,
   ServerProviderModel,
   ServerProviderSkill,
@@ -27,28 +28,21 @@ import {
 } from "../providerSnapshot.ts";
 import { makeKiroAcpRuntime } from "../acp/KiroAcpSupport.ts";
 import { discoverCodexSkills } from "../CodexSkillBridge.ts";
-import { buildKiroEffortDescriptor } from "../kiroEffort.ts";
-import { buildKiroAgentModeDescriptor } from "../kiroAgentMode.ts";
 
 const PROVIDER = ProviderDriverKind.make("kiro");
 const KIRO_PRESENTATION = {
   displayName: "Kiro",
-  // Kiro replaces the generic Build/Plan interaction toggle with its own
-  // Build/Plan/Guide agent-mode selector (see KIRO_MODEL_CAPABILITIES), so the
-  // shared toggle is disabled to avoid two competing mode controls.
-  showInteractionModeToggle: false,
+  showInteractionModeToggle: true,
 } as const;
-// Every Kiro model carries the agent-mode (Build/Plan/Guide) selector and the
-// reasoning effort selector. Mode is listed first as the primary control.
-export const KIRO_MODEL_CAPABILITIES = createModelCapabilities({
-  optionDescriptors: [buildKiroAgentModeDescriptor(), buildKiroEffortDescriptor()],
+const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [],
 });
 const KIRO_FALLBACK_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "auto",
     name: "Auto",
     isCustom: false,
-    capabilities: KIRO_MODEL_CAPABILITIES,
+    capabilities: EMPTY_CAPABILITIES,
   },
 ];
 const VERSION_TIMEOUT_MS = 4_000;
@@ -83,7 +77,7 @@ function getKiroFallbackModels(
     KIRO_FALLBACK_MODELS,
     PROVIDER,
     kiroSettings.customModels,
-    KIRO_MODEL_CAPABILITIES,
+    EMPTY_CAPABILITIES,
   );
 }
 
@@ -217,7 +211,7 @@ function buildKiroModelsFromModelState(
         slug,
         name: name || slug,
         isCustom: false,
-        capabilities: KIRO_MODEL_CAPABILITIES,
+        capabilities: EMPTY_CAPABILITIES,
       } satisfies ServerProviderModel,
     ];
   });
@@ -239,7 +233,7 @@ function buildKiroModelsFromConfigOptions(
         slug,
         name: name || slug,
         isCustom: false,
-        capabilities: KIRO_MODEL_CAPABILITIES,
+        capabilities: EMPTY_CAPABILITIES,
       } satisfies ServerProviderModel,
     ];
   });
@@ -294,7 +288,7 @@ export function parseKiroListModelsOutput(
         slug,
         name: name || slug,
         isCustom: false,
-        capabilities: KIRO_MODEL_CAPABILITIES,
+        capabilities: EMPTY_CAPABILITIES,
       } satisfies ServerProviderModel,
     ];
   });
@@ -383,7 +377,7 @@ function buildKiroProviderSnapshot(input: {
         : KIRO_FALLBACK_MODELS,
       PROVIDER,
       input.kiroSettings.customModels,
-      KIRO_MODEL_CAPABILITIES,
+      EMPTY_CAPABILITIES,
     ),
     skills: input.skills ?? [],
     probe: {

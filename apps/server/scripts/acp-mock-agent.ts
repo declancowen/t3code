@@ -552,7 +552,7 @@ const program = Effect.gen(function* () {
       });
     }
 
-    if (method !== "session/mode/set" && method !== "session/set_mode") {
+    if (method !== "session/mode/set") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }
 

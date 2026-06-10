@@ -48,15 +48,6 @@ export interface AcpSessionRuntimeOptions {
   };
   readonly authMethodId?: string;
   readonly setModelStrategy?: "config-option" | "session-set-model";
-  /**
-   * How to apply `setMode`:
-   *  - `"config-option"` (default): set the `"mode"` session config option via
-   *    `session/set_config_option` (Cursor and other config-option agents).
-   *  - `"session-set-mode"`: issue a real `session/set_mode` request. Required
-   *    for agents like kiro-cli that implement `session/set_mode` but do NOT
-   *    implement `session/set_config_option`.
-   */
-  readonly setModeStrategy?: "config-option" | "session-set-mode";
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -550,23 +541,6 @@ const makeAcpSessionRuntime = (
           Effect.flatMap((modeState) => {
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
-            }
-            if (options.setModeStrategy === "session-set-mode") {
-              return getStartedState.pipe(
-                Effect.flatMap((started) => {
-                  const requestPayload = {
-                    sessionId: started.sessionId,
-                    modeId,
-                  } satisfies EffectAcpSchema.SetSessionModeRequest;
-                  return runLoggedRequest(
-                    "session/set_mode",
-                    requestPayload,
-                    acp.raw.request("session/set_mode", requestPayload),
-                  );
-                }),
-                Effect.tap(() => updateCurrentModeId(modeId)),
-                Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
-              );
             }
             return setConfigOption("mode", modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),

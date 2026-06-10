@@ -21,29 +21,17 @@ export interface KiroAcpRuntimeInput extends Omit<
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly environment?: NodeJS.ProcessEnv;
   readonly kiroSettings: KiroAcpRuntimeSettings | null | undefined;
-  /**
-   * Initial reasoning effort level. Applied via the `kiro-cli acp --effort`
-   * spawn flag because kiro-cli has no in-session ACP method for effort. Must
-   * already be a validated level (see `resolveKiroEffortLevel`).
-   */
-  readonly effort?: string;
 }
 
 export function buildKiroAcpSpawnInput(
   kiroSettings: KiroAcpRuntimeSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
-  effort?: string,
 ): AcpSpawnInput {
   const agentName = kiroSettings?.agentName.trim();
-  const effortLevel = effort?.trim();
   return {
     command: kiroSettings?.binaryPath || "kiro-cli",
-    args: [
-      "acp",
-      ...(agentName ? (["--agent", agentName] as const) : []),
-      ...(effortLevel ? (["--effort", effortLevel] as const) : []),
-    ],
+    args: ["acp", ...(agentName ? (["--agent", agentName] as const) : [])],
     cwd,
     ...(environment ? { env: environment } : {}),
   };
@@ -56,14 +44,8 @@ export const makeKiroAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
-        spawn: buildKiroAcpSpawnInput(
-          input.kiroSettings,
-          input.cwd,
-          input.environment,
-          input.effort,
-        ),
+        spawn: buildKiroAcpSpawnInput(input.kiroSettings, input.cwd, input.environment),
         setModelStrategy: "session-set-model",
-        setModeStrategy: "session-set-mode",
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),
