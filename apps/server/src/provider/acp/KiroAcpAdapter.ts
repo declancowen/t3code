@@ -60,6 +60,7 @@ import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import type { AcpSessionRuntimeOptions } from "./AcpSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { kiroEffortFromSelections } from "../kiroEffort.ts";
+import { kiroAgentModeFromSelections } from "../kiroAgentMode.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -233,6 +234,12 @@ function applyRequestedSessionConfiguration(input: {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode | undefined;
   readonly model: string | undefined;
+  /**
+   * Explicit ACP mode/agent id to activate. When set (Kiro's Build/Plan/Guide
+   * agent selection) it overrides the interaction-mode-derived mode. When
+   * undefined, the mode is resolved from interaction/runtime mode aliases.
+   */
+  readonly agentModeId?: string | undefined;
   readonly mapError: (context: {
     readonly cause: EffectAcpErrors.AcpError;
     readonly method: "session/set_model" | "session/set_mode";
@@ -250,11 +257,13 @@ function applyRequestedSessionConfiguration(input: {
       );
     }
 
-    const requestedModeId = resolveRequestedModeId({
-      interactionMode: input.interactionMode,
-      runtimeMode: input.runtimeMode,
-      modeState: yield* input.runtime.getModeState,
-    });
+    const requestedModeId =
+      input.agentModeId ??
+      resolveRequestedModeId({
+        interactionMode: input.interactionMode,
+        runtimeMode: input.runtimeMode,
+        modeState: yield* input.runtime.getModeState,
+      });
     if (!requestedModeId) return;
 
     yield* input.runtime.setMode(requestedModeId).pipe(
@@ -588,6 +597,10 @@ export function makeKiroAcpAdapter(
             input.modelSelection?.instanceId === boundInstanceId
               ? kiroEffortFromSelections(input.modelSelection.options)
               : undefined;
+          const selectedAgentMode =
+            input.modelSelection?.instanceId === boundInstanceId
+              ? kiroAgentModeFromSelections(input.modelSelection.options)
+              : undefined;
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing);
@@ -709,6 +722,7 @@ export function makeKiroAcpAdapter(
             runtimeMode: input.runtimeMode,
             interactionMode: undefined,
             model: selectedModel,
+            agentModeId: selectedAgentMode,
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(provider, input.threadId, method, cause),
           });
@@ -949,11 +963,16 @@ export function makeKiroAcpAdapter(
                 ? input.modelSelection.model
                 : undefined;
             const model = turnModel ?? ctx.session.model;
+            const turnAgentMode =
+              input.modelSelection?.instanceId === boundInstanceId
+                ? kiroAgentModeFromSelections(input.modelSelection.options)
+                : undefined;
             yield* applyRequestedSessionConfiguration({
               runtime: ctx.acp,
               runtimeMode: ctx.session.runtimeMode,
               interactionMode: input.interactionMode,
               model,
+              agentModeId: turnAgentMode,
               mapError: ({ cause, method }) =>
                 mapAcpToAdapterError(provider, input.threadId, method, cause),
             });

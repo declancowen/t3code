@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createModelCapabilities } from "@t3tools/shared/model";
 
-import { parseKiroListModelsOutput } from "./KiroProvider.ts";
-
-const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
+import { KIRO_MODEL_CAPABILITIES, parseKiroListModelsOutput } from "./KiroProvider.ts";
 
 describe("parseKiroListModelsOutput", () => {
   it("publishes Kiro CLI model choices from chat --list-models json", () => {
@@ -34,13 +31,13 @@ describe("parseKiroListModelsOutput", () => {
         slug: "auto",
         name: "auto",
         isCustom: false,
-        capabilities: emptyCapabilities,
+        capabilities: KIRO_MODEL_CAPABILITIES,
       },
       {
         slug: "claude-opus-4.7",
         name: "claude-opus-4.7",
         isCustom: false,
-        capabilities: emptyCapabilities,
+        capabilities: KIRO_MODEL_CAPABILITIES,
       },
     ]);
   });
