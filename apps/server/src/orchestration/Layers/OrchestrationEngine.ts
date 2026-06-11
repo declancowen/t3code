@@ -38,6 +38,7 @@ import {
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { isManagedQueueEnabled } from "../managedQueueFlag.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -153,9 +154,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
-          // Managed message-queue feature flag (off by default). Toggle with
-          // T3CODE_MANAGED_QUEUE=1 and a server restart — no rebuild needed.
-          queueEnabled: process.env.T3CODE_MANAGED_QUEUE === "1",
+          // Managed message-queue feature flag (enabled by default). Disable
+          // with T3CODE_MANAGED_QUEUE=0 and a server restart — no rebuild needed.
+          queueEnabled: isManagedQueueEnabled(),
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError((cause) =>

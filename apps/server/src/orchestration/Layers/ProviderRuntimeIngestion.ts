@@ -38,6 +38,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { isManagedQueueEnabled } from "../managedQueueFlag.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 
@@ -1351,7 +1352,7 @@ const make = Effect.gen(function* () {
           // through the adapter's session/prompt — orchestration owns only ordering.
           if (
             event.type === "turn.completed" &&
-            process.env.T3CODE_MANAGED_QUEUE === "1" &&
+            isManagedQueueEnabled() &&
             normalizeRuntimeTurnState(event.payload.state) === "completed"
           ) {
             yield* orchestrationEngine
