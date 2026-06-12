@@ -174,19 +174,17 @@ it.effect("does NOT enqueue when the flag is off (starts the turn as before)", (
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect(
-  "does NOT enqueue for steer-capable providers (Codex) even when the flag is on",
-  () =>
-    Effect.gen(function* () {
-      // Codex supports mid-turn steering. The decider must bypass the queue
-      // and route the message through the normal `thread.message-sent` +
-      // `thread.turn-start-requested` path so the adapter can steer the
-      // active turn instead of parking the input.
-      const rm = yield* seed({ activeTurnId: "turn-1", providerName: "codex" });
-      const events = yield* decide(turnStartCommand, rm, true);
-      const types = events.map((e) => e.type);
-      assert.deepEqual(types, ["thread.message-sent", "thread.turn-start-requested"]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+it.effect("does NOT enqueue for steer-capable providers (Codex) even when the flag is on", () =>
+  Effect.gen(function* () {
+    // Codex supports mid-turn steering. The decider must bypass the queue
+    // and route the message through the normal `thread.message-sent` +
+    // `thread.turn-start-requested` path so the adapter can steer the
+    // active turn instead of parking the input.
+    const rm = yield* seed({ activeTurnId: "turn-1", providerName: "codex" });
+    const events = yield* decide(turnStartCommand, rm, true);
+    const types = events.map((e) => e.type);
+    assert.deepEqual(types, ["thread.message-sent", "thread.turn-start-requested"]);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("dispatch drains the FIFO head into a real turn when idle", () =>
