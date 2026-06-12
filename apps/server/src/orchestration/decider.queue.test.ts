@@ -30,8 +30,13 @@ const MODEL = { instanceId: ProviderInstanceId.make("kiro"), model: "claude-opus
 
 // Build a read model with a project + thread, optionally with an active turn
 // and/or a pre-existing queued message.
-const seed = (opts: { activeTurnId?: string | null; queuedMessageId?: string }) =>
+const seed = (opts: {
+  activeTurnId?: string | null;
+  queuedMessageId?: string;
+  providerName?: string;
+}) =>
   Effect.gen(function* () {
+    const providerName = opts.providerName ?? "kiro";
     let seq = 0;
     const next = () => (seq += 1);
     let rm: OrchestrationReadModel = createEmptyReadModel(NOW);
@@ -97,8 +102,8 @@ const seed = (opts: { activeTurnId?: string | null; queuedMessageId?: string }) 
           session: {
             threadId: THREAD,
             status: opts.activeTurnId === null ? "ready" : "running",
-            providerName: "kiro",
-            providerInstanceId: ProviderInstanceId.make("kiro"),
+            providerName,
+            providerInstanceId: ProviderInstanceId.make(providerName),
             runtimeMode: "full-access",
             activeTurnId: opts.activeTurnId === null ? null : TurnId.make(opts.activeTurnId),
             lastError: null,
@@ -167,6 +172,21 @@ it.effect("does NOT enqueue when the flag is off (starts the turn as before)", (
     const types = events.map((e) => e.type);
     assert.deepEqual(types, ["thread.message-sent", "thread.turn-start-requested"]);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "does NOT enqueue for steer-capable providers (Codex) even when the flag is on",
+  () =>
+    Effect.gen(function* () {
+      // Codex supports mid-turn steering. The decider must bypass the queue
+      // and route the message through the normal `thread.message-sent` +
+      // `thread.turn-start-requested` path so the adapter can steer the
+      // active turn instead of parking the input.
+      const rm = yield* seed({ activeTurnId: "turn-1", providerName: "codex" });
+      const events = yield* decide(turnStartCommand, rm, true);
+      const types = events.map((e) => e.type);
+      assert.deepEqual(types, ["thread.message-sent", "thread.turn-start-requested"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("dispatch drains the FIFO head into a real turn when idle", () =>

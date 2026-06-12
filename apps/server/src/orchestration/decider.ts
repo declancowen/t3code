@@ -20,6 +20,7 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import { providerSupportsSteering } from "./providerCapabilities.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -426,12 +427,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         targetThread.session !== null &&
         targetThread.session.status !== "stopped" &&
         targetThread.session.activeTurnId !== null;
-      // Managed queue: when enabled, park the message in the thread's visible
-      // queue if a turn is already running or messages are already queued
-      // (preserve FIFO). The dispatch reactor sends it as a real turn once the
-      // active turn completes. Plan-implementation turns are never queued.
+      // Managed queue: only the right behavior for providers that cannot
+      // accept user input mid-turn (currently just Kiro). Steer-capable
+      // providers (Codex, Claude, Cursor, OpenCode) bypass the queue and go
+      // straight through `thread.message-sent` + `thread.turn-start-requested`
+      // so their adapter can serialize the new input into the active turn —
+      // i.e. real steering. We also skip the queue when the thread has not
+      // bound to a provider yet so a brand-new thread never silently parks
+      // a user message.
+      const threadProviderName = targetThread.session?.providerName ?? null;
+      const threadCanSteer = providerSupportsSteering(threadProviderName);
+      // Park the message in the thread's visible queue if a turn is already
+      // running or messages are already queued (preserve FIFO). The dispatch
+      // reactor sends it as a real turn once the active turn completes.
+      // Plan-implementation turns are never queued.
       if (
         queueEnabled &&
+        !threadCanSteer &&
         sourceProposedPlan === undefined &&
         (turnActive || targetThread.queuedMessages.length > 0)
       ) {
