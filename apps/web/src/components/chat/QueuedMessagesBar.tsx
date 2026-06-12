@@ -36,7 +36,7 @@ export function QueuedMessagesBar(props: {
   };
 
   return (
-    <div className="mb-1.5 overflow-hidden rounded-[20px] border border-border/70 bg-muted/30 shadow-sm">
+    <div className="mx-auto mb-1.5 w-full max-w-208 overflow-hidden rounded-[20px] border border-border/70 bg-muted/30 shadow-sm">
       <div className="flex items-center gap-1.5 border-border/50 border-b bg-muted/40 px-3 py-1.5">
         <ClockIcon className="size-3.5 text-muted-foreground" />
         <span className="font-medium text-foreground text-xs">Queued</span>
