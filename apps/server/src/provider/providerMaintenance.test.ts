@@ -84,7 +84,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         ProviderVersionCache,
         new Map([
           [
-            "@example/package-tool",
+            "npm:@example/package-tool",
             {
               expiresAt: Number.MAX_SAFE_INTEGER,
               version: "9.9.9",
