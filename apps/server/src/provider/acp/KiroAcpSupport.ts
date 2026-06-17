@@ -14,6 +14,16 @@ import {
 
 type KiroAcpRuntimeSettings = Pick<KiroSettings, "agentName" | "binaryPath">;
 
+const KIRO_ACP_REQUEST_TIMEOUTS = {
+  initialize: "15 seconds",
+  authenticate: "15 seconds",
+  "session/load": "15 seconds",
+  "session/new": "15 seconds",
+  "session/set_model": "8 seconds",
+  "session/set_mode": "8 seconds",
+  "session/set_config_option": "8 seconds",
+} as const satisfies NonNullable<AcpSessionRuntimeOptions["requestTimeouts"]>;
+
 export interface KiroAcpRuntimeInput extends Omit<
   AcpSessionRuntimeOptions,
   "authMethodId" | "setModelStrategy" | "spawn"
@@ -63,7 +73,17 @@ export const makeKiroAcpRuntime = (
           input.effort,
         ),
         setModelStrategy: "session-set-model",
+        setModelFailureMode: "continue-with-current",
         setModeStrategy: "session-set-mode",
+        requestTimeouts: {
+          ...KIRO_ACP_REQUEST_TIMEOUTS,
+          ...input.requestTimeouts,
+        },
+        wireCompatibility: {
+          tolerateMultilineJson: true,
+          ignoreNonJsonStdout: true,
+          ...input.wireCompatibility,
+        },
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),

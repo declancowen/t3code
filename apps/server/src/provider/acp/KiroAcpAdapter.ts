@@ -280,6 +280,16 @@ function applyRequestedSessionConfiguration(input: {
 function selectAutoApprovedPermissionOption(
   request: EffectAcpSchema.RequestPermissionRequest,
 ): string | undefined {
+  const approveForSessionOption = request.options.find(
+    (option) => option.optionId === "approve_for_session",
+  );
+  if (
+    typeof approveForSessionOption?.optionId === "string" &&
+    approveForSessionOption.optionId.trim()
+  ) {
+    return approveForSessionOption.optionId.trim();
+  }
+
   const allowAlwaysOption = request.options.find((option) => option.kind === "allow_always");
   if (typeof allowAlwaysOption?.optionId === "string" && allowAlwaysOption.optionId.trim()) {
     return allowAlwaysOption.optionId.trim();

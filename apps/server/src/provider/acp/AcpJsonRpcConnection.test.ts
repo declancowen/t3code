@@ -15,6 +15,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const prettyStartAgentPath = path.join(__dirname, "../../../scripts/acp-pretty-start-agent.ts");
 const mockAgentCommand = "node";
 const mockAgentArgs = [mockAgentPath];
 
@@ -337,6 +338,81 @@ describe("AcpSessionRuntime", () => {
             Effect.sync(() => {
               requestEvents.push(event);
             }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("continues with the current model when session/set_model is recoverable", () => {
+    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      yield* runtime.setModel("unknown-kiro-model");
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_model" && event.status === "failed",
+        ),
+      ).toBe(true);
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/prompt" && event.status === "succeeded",
+        ),
+      ).toBe(true);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          setModelStrategy: "session-set-model",
+          setModelFailureMode: "continue-with-current",
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("decodes bounded pretty-printed JSON-RPC startup messages when opted in", () => {
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("pretty-session-1");
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: [prettyStartAgentPath],
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          wireCompatibility: {
+            tolerateMultilineJson: true,
+            ignoreNonJsonStdout: true,
+          },
         }),
       ),
       Effect.scoped,

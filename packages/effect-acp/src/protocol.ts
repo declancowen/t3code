@@ -46,6 +46,7 @@ export interface AcpPatchedProtocolOptions {
   readonly stdio: Stdio.Stdio;
   readonly terminationError?: Effect.Effect<AcpError.AcpError>;
   readonly serverRequestMethods: ReadonlySet<string>;
+  readonly wireCompatibility?: AcpWireCompatibilityOptions;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocolLogEvent) => Effect.Effect<void, never>;
@@ -67,6 +68,20 @@ export interface AcpPatchedProtocol {
   readonly notify: (method: string, payload: unknown) => Effect.Effect<void, AcpError.AcpError>;
 }
 
+export interface AcpWireCompatibilityOptions {
+  /**
+   * ACP is newline-delimited JSON-RPC, but some CLIs have emitted
+   * pretty-printed JSON during early startup. Enable this for agents where we
+   * prefer bounded tolerance over failing the whole session on framing drift.
+   */
+  readonly tolerateMultilineJson?: boolean;
+  /**
+   * When multiline tolerance is enabled, ignore non-JSON stdout lines instead
+   * of failing the protocol. Stderr should still carry diagnostics.
+   */
+  readonly ignoreNonJsonStdout?: boolean;
+}
+
 const decodeSessionUpdate = Schema.decodeUnknownEffect(AcpSchema.SessionNotification);
 const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
@@ -78,6 +93,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
+  const wireDecoder = makeWireCompatibilityDecoder(options.wireCompatibility);
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
@@ -510,6 +526,59 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
   };
 
+  const decodeWireMessages = (data: string | Uint8Array) =>
+    Effect.try({
+      try: () => {
+        if (!wireDecoder) {
+          return parser.decode(data) as ReadonlyArray<
+            RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+          >;
+        }
+        return wireDecoder
+          .decode(data)
+          .flatMap(
+            (frame) =>
+              parser.decode(`${compactJsonFrame(frame)}\n`) as ReadonlyArray<
+                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+              >,
+          );
+      },
+      catch: (cause) =>
+        new AcpError.AcpProtocolParseError({
+          detail: "Failed to decode ACP wire message",
+          cause,
+        }),
+    });
+
+  const decodeFlushedWireMessages = () =>
+    Effect.try({
+      try: () => {
+        if (!wireDecoder) {
+          return [];
+        }
+        return wireDecoder
+          .flush()
+          .flatMap(
+            (frame) =>
+              parser.decode(`${compactJsonFrame(frame)}\n`) as ReadonlyArray<
+                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+              >,
+          );
+      },
+      catch: (cause) =>
+        new AcpError.AcpProtocolParseError({
+          detail: "Failed to decode trailing ACP wire message",
+          cause,
+        }),
+    });
+
+  const routeDecodedMessages = (
+    messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>,
+  ) =>
+    Effect.forEach(messages, routeDecodedMessage, {
+      discard: true,
+    });
+
   yield* options.stdio.stdin.pipe(
     Stream.runForEach((data) =>
       logProtocol({
@@ -517,19 +586,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         stage: "raw",
         payload: typeof data === "string" ? data : new TextDecoder().decode(data),
       }).pipe(
-        Effect.flatMap(() =>
-          Effect.try({
-            try: () =>
-              parser.decode(data) as ReadonlyArray<
-                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
-              >,
-            catch: (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: "Failed to decode ACP wire message",
-                cause,
-              }),
-          }),
-        ),
+        Effect.flatMap(() => decodeWireMessages(data)),
         Effect.tap((messages) =>
           logProtocol({
             direction: "incoming",
@@ -547,11 +604,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
             },
           }),
         ),
-        Effect.flatMap((messages) =>
-          Effect.forEach(messages, routeDecodedMessage, {
-            discard: true,
-          }),
-        ),
+        Effect.flatMap(routeDecodedMessages),
       ),
     ),
     Effect.matchEffect({
@@ -565,15 +618,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleTermination(() => Effect.succeed(normalized));
       },
       onSuccess: () =>
-        handleTermination(
-          () =>
-            options.terminationError ??
-            Effect.succeed(
-              new AcpError.AcpTransportError({
-                detail: "ACP input stream ended",
-                cause: new Error("ACP input stream ended"),
-              }),
+        decodeFlushedWireMessages().pipe(
+          Effect.flatMap(routeDecodedMessages),
+          Effect.catch((error) => handleTermination(() => Effect.succeed(error))),
+          Effect.andThen(
+            handleTermination(
+              () =>
+                options.terminationError ??
+                Effect.succeed(
+                  new AcpError.AcpTransportError({
+                    detail: "ACP input stream ended",
+                    cause: new Error("ACP input stream ended"),
+                  }),
+                ),
             ),
+          ),
         ),
     }),
     Effect.forkScoped,
@@ -723,4 +782,181 @@ function toRpcClientError(error: AcpError.AcpError): RpcClientError.RpcClientErr
       cause: error,
     }),
   });
+}
+
+interface WireCompatibilityDecoder {
+  readonly decode: (data: string | Uint8Array) => ReadonlyArray<string>;
+  readonly flush: () => ReadonlyArray<string>;
+}
+
+const MAX_MULTILINE_JSON_LENGTH = 128_000;
+const MAX_MULTILINE_JSON_LINES = 256;
+
+function makeWireCompatibilityDecoder(
+  options: AcpWireCompatibilityOptions | undefined,
+): WireCompatibilityDecoder | undefined {
+  if (options?.tolerateMultilineJson !== true) {
+    return undefined;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let pendingJson = "";
+  let pendingJsonLineCount = 0;
+
+  const resetPendingJson = () => {
+    pendingJson = "";
+    pendingJsonLineCount = 0;
+  };
+
+  const tryEmit = (candidate: string, frames: Array<string>): boolean => {
+    try {
+      JSON.parse(candidate);
+      frames.push(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleLine = (line: string, frames: Array<string>): void => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    if (pendingJson) {
+      const nextCandidate = `${pendingJson}\n${trimmed}`;
+      if (tryEmit(nextCandidate, frames)) {
+        resetPendingJson();
+        return;
+      }
+      pendingJsonLineCount += 1;
+      if (
+        classifyJsonContainer(nextCandidate) === "incomplete" &&
+        nextCandidate.length <= MAX_MULTILINE_JSON_LENGTH &&
+        pendingJsonLineCount <= MAX_MULTILINE_JSON_LINES
+      ) {
+        pendingJson = nextCandidate;
+        return;
+      }
+      resetPendingJson();
+      handleLine(trimmed, frames);
+      return;
+    }
+
+    if (tryEmit(trimmed, frames)) {
+      return;
+    }
+
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      pendingJson = trimmed;
+      pendingJsonLineCount = 1;
+      return;
+    }
+
+    if (options.ignoreNonJsonStdout === true) {
+      return;
+    }
+
+    // Preserve strict failure semantics for invalid JSON when callers only ask
+    // for multiline tolerance. Feeding the raw line through the parser keeps the
+    // existing error shape.
+    frames.push(trimmed);
+  };
+
+  return {
+    decode: (data) => {
+      const frames: Array<string> = [];
+      buffer += typeof data === "string" ? data : decoder.decode(data);
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        handleLine(line, frames);
+      }
+      return frames;
+    },
+    flush: () => {
+      const frames: Array<string> = [];
+      const remaining = buffer.trim();
+      buffer = "";
+      if (remaining) {
+        handleLine(remaining, frames);
+      }
+      if (pendingJson && tryEmit(pendingJson, frames)) {
+        resetPendingJson();
+      }
+      return frames;
+    },
+  };
+}
+
+function compactJsonFrame(frame: string): string {
+  return JSON.stringify(JSON.parse(frame));
+}
+
+function classifyJsonContainer(input: string): "complete" | "incomplete" | "invalid" {
+  const stack: Array<"{" | "["> = [];
+  let inString = false;
+  let escaped = false;
+  let started = false;
+  let complete = false;
+
+  for (const char of input) {
+    if (!started && /\s/.test(char)) {
+      continue;
+    }
+    if (complete) {
+      if (/\s/.test(char)) {
+        continue;
+      }
+      return "invalid";
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      if (!started) {
+        return "invalid";
+      }
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      if (!started) {
+        started = true;
+      }
+      stack.push(char);
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      const expected = char === "}" ? "{" : "[";
+      if (stack.pop() !== expected) {
+        return "invalid";
+      }
+      if (stack.length === 0) {
+        complete = true;
+      }
+      continue;
+    }
+    if (!started && !/\s/.test(char)) {
+      return "invalid";
+    }
+  }
+
+  if (!started || inString || stack.length > 0) {
+    return "incomplete";
+  }
+  return complete ? "complete" : "invalid";
 }

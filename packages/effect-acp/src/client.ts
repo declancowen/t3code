@@ -23,6 +23,7 @@ import {
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 
 export interface AcpClientOptions {
+  readonly wireCompatibility?: AcpProtocol.AcpWireCompatibilityOptions;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
@@ -401,6 +402,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     stdio: stdio,
     ...(terminationError ? { terminationError } : {}),
     serverRequestMethods: new Set(AcpRpcs.ClientRpcs.requests.keys()),
+    ...(options.wireCompatibility ? { wireCompatibility: options.wireCompatibility } : {}),
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
