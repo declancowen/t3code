@@ -138,9 +138,9 @@ const PlanSidebar = memo(function PlanSidebar({
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-3">
         <div className="flex items-center gap-2">
           <Badge
-            variant="info"
+            variant="secondary"
             size="sm"
-            className="rounded-md px-1.5 py-0 font-semibold tracking-wide uppercase"
+            className="border border-primary/20 bg-primary/12 px-1.5 py-0 font-semibold text-primary tracking-wide uppercase hover:bg-primary/14"
           >
             {label}
           </Badge>
@@ -203,7 +203,7 @@ const PlanSidebar = memo(function PlanSidebar({
                   key={`${step.status}:${step.step}`}
                   className={cn(
                     "flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-200",
-                    step.status === "inProgress" && "bg-blue-500/5",
+                    step.status === "inProgress" && "bg-primary/8",
                     step.status === "completed" && "bg-emerald-500/5",
                   )}
                 >

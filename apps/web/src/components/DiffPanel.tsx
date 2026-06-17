@@ -57,6 +57,9 @@ const DIFF_PANEL_UNSAFE_CSS = `
 [data-virtualizer-buffer] {
   --diffs-header-font-family: var(--font-sans) !important;
   --diffs-font-family: var(--font-mono) !important;
+  --diffs-effective-font-size: var(--chat-font-size, 14px) !important;
+  --diffs-effective-header-font-size: max(11px, calc(var(--chat-font-size, 14px) - 2px)) !important;
+  --diffs-effective-count-font-size: max(10px, calc(var(--chat-font-size, 14px) - 3px)) !important;
   --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
@@ -83,6 +86,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
   );
 
   background-color: var(--diffs-bg) !important;
+  font-size: var(--diffs-effective-font-size) !important;
 }
 
 [data-file-info] {
@@ -99,7 +103,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
   border-bottom: 1px solid var(--border) !important;
   align-items: center !important;
   font-family: var(--font-sans) !important;
-  font-size: 12px !important;
+  font-size: var(--diffs-effective-header-font-size) !important;
   line-height: 1 !important;
   min-height: 32px !important;
   padding-block: 6px !important;
@@ -119,7 +123,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
 [data-diffs-header] [data-additions-count],
 [data-diffs-header] [data-deletions-count] {
   font-family: var(--font-mono) !important;
-  font-size: 11px !important;
+  font-size: var(--diffs-effective-count-font-size) !important;
   font-variant-numeric: tabular-nums;
   line-height: 1 !important;
 }

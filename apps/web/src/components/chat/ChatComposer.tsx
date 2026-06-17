@@ -216,7 +216,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
               className={cn(
                 "shrink-0 whitespace-nowrap px-2 sm:px-3",
                 props.interactionMode === "plan"
-                  ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300"
+                  ? "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary"
                   : "text-muted-foreground/70 hover:text-foreground/80",
               )}
               size="sm"
@@ -298,7 +298,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
                   className={cn(
                     "shrink-0 whitespace-nowrap px-2 sm:px-3",
                     props.planSidebarOpen
-                      ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300"
+                      ? "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary"
                       : "text-muted-foreground/70 hover:text-foreground/80",
                   )}
                   size="sm"

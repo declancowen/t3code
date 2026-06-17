@@ -71,6 +71,8 @@ export interface ProviderMaintenanceCommandAction {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly shell?: boolean;
 }
 
 export interface ProviderMaintenanceCapabilityResolutionOptions {
@@ -123,6 +125,8 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
+  readonly updateEnv?: NodeJS.ProcessEnv;
+  readonly updateShell?: boolean;
   readonly latestVersionSource?: ProviderLatestVersionSource;
 }): ProviderMaintenanceCapabilities {
   const update =
@@ -133,6 +137,8 @@ export function makeProviderMaintenanceCapabilities(input: {
           executable: input.updateExecutable,
           args: input.updateArgs,
           lockKey: input.updateLockKey,
+          ...(input.updateEnv ? { env: input.updateEnv } : {}),
+          ...(input.updateShell !== undefined ? { shell: input.updateShell } : {}),
         };
   return {
     provider: input.provider,

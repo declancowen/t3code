@@ -121,6 +121,12 @@ function mockSpawnerLayer(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
+    options:
+      | {
+          readonly env?: NodeJS.ProcessEnv;
+          readonly shell?: boolean;
+        }
+      | undefined,
   ) => {
     readonly stdout?: string;
     readonly stderr?: string;
@@ -134,8 +140,16 @@ function mockSpawnerLayer(
       const childProcess = command as unknown as {
         readonly command: string;
         readonly args: ReadonlyArray<string>;
+        readonly options?:
+          | {
+              readonly env?: NodeJS.ProcessEnv;
+              readonly shell?: boolean;
+            }
+          | undefined;
       };
-      return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
+      return Effect.succeed(
+        mockHandle(handler(childProcess.command, childProcess.args, childProcess.options)),
+      );
     }),
   );
 }
@@ -282,6 +296,56 @@ describe("providerMaintenanceRunner", () => {
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer((command, args) => {
             calls.push({ command, args });
+            return { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("passes provider-scoped environment to the update command", () => {
+    const updateEnv: NodeJS.ProcessEnv = {
+      PATH: "/kiro/bin",
+      HOME: "/Users/alex",
+      KIRO_HOME: "/Users/alex/.kiro-work",
+    };
+    const calls: Array<{
+      command: string;
+      args: ReadonlyArray<string>;
+      env: NodeJS.ProcessEnv | undefined;
+    }> = [];
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider);
+      const updater = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+          Effect.succeed(
+            makeProviderMaintenanceCapabilities({
+              provider,
+              packageName: null,
+              updateExecutable: "/kiro/bin/kiro-cli",
+              updateArgs: ["update", "--non-interactive"],
+              updateLockKey: "kiro-cli",
+              updateEnv,
+            }),
+          ),
+      });
+
+      yield* updater.updateProvider(CODEX_DRIVER);
+
+      assert.deepStrictEqual(calls, [
+        {
+          command: "/kiro/bin/kiro-cli",
+          args: ["update", "--non-interactive"],
+          env: updateEnv,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((command, args, options) => {
+            calls.push({ command, args, env: options?.env });
             return { stdout: "updated" };
           }),
         ),

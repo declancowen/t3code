@@ -63,7 +63,7 @@ export function ComposerPreviewAnnotationCards({
                 />
               </button>
             ) : (
-              <span className="grid size-10 shrink-0 place-items-center border-r border-border/70 text-blue-500">
+              <span className="grid size-10 shrink-0 place-items-center border-r border-border/70 text-primary">
                 <MousePointerClick className="size-3.5" />
               </span>
             )}

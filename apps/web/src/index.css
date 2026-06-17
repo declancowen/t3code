@@ -8,6 +8,7 @@
   --workspace-topbar-height: 52px;
   --workspace-controls-top: 0px;
   --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
+  --workspace-native-controls-left-inset: 0px;
   --workspace-native-controls-inset: 0px;
 }
 
@@ -17,6 +18,7 @@
   --workspace-controls-right: calc(
     100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
   );
+  --workspace-native-controls-left-inset: env(titlebar-area-x, 0px);
   --workspace-native-controls-inset: calc(
     100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
   );
@@ -538,17 +540,17 @@ label:has(> select#reasoning-effort) select {
   vertical-align: middle;
 }
 
-.chat-markdown a {
-  color: var(--info-foreground);
-  text-decoration: none;
+.chat-markdown a:not(.chat-markdown-file-link) {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  text-underline-offset: 0.14em;
 }
 
 .chat-markdown a:not(.chat-markdown-file-link):hover,
 .chat-markdown a:not(.chat-markdown-file-link):focus-visible {
-  background-image: radial-gradient(circle, currentcolor 0.75px, transparent 1px);
-  background-position: left bottom;
-  background-repeat: repeat-x;
-  background-size: 4px 2px;
+  color: color-mix(in srgb, var(--primary) 84%, var(--foreground));
+  text-decoration-color: currentColor;
 }
 
 .chat-markdown .chat-markdown-link-favicon {

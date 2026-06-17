@@ -2557,13 +2557,13 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }) {
   const wordmark = (
     <div className="flex items-center gap-2">
-      <SidebarTrigger className="shrink-0 md:hidden" />
+      <SidebarTrigger className="shrink-0" showWhen="open" />
       <Tooltip>
         <TooltipTrigger
           render={
             <Link
               aria-label="Go to threads"
-              className="ml-1 flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-md outline-hidden ring-ring transition-colors hover:text-foreground focus-visible:ring-2"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-md outline-hidden ring-ring transition-colors hover:text-foreground focus-visible:ring-2"
               to="/"
             >
               <T3Wordmark />
@@ -2584,11 +2584,14 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]">
+    <SidebarHeader
+      className="drag-region h-[52px] flex-row items-center gap-2 py-0 pr-4 wco:h-[env(titlebar-area-height)]"
+      style={{ paddingLeft: "calc(var(--workspace-native-controls-left-inset) + 0.5rem)" }}
+    >
       {wordmark}
     </SidebarHeader>
   ) : (
-    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-4 sm:py-3">{wordmark}</SidebarHeader>
+    <SidebarHeader className="gap-2 px-2 py-2 sm:gap-2 sm:px-2 sm:py-3">{wordmark}</SidebarHeader>
   );
 });
 

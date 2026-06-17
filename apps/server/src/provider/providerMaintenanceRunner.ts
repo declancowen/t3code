@@ -72,11 +72,18 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
     readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
     readonly command: string;
     readonly args: ReadonlyArray<string>;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly shell?: boolean;
   }) {
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
         const child = yield* input.spawner
-          .spawn(ChildProcess.make(input.command, [...input.args]))
+          .spawn(
+            ChildProcess.make(input.command, [...input.args], {
+              ...(input.env ? { env: input.env } : {}),
+              ...(input.shell !== undefined ? { shell: input.shell } : {}),
+            }),
+          )
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -194,11 +201,20 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
-  const runMaintenanceCommand = (command: string, args: ReadonlyArray<string>) =>
+  const runMaintenanceCommand = (
+    command: string,
+    args: ReadonlyArray<string>,
+    options?: {
+      readonly env?: NodeJS.ProcessEnv;
+      readonly shell?: boolean;
+    },
+  ) =>
     runProviderMaintenanceCommandWithSpawner({
       spawner,
       command,
       args,
+      ...(options?.env ? { env: options.env } : {}),
+      ...(options?.shell !== undefined ? { shell: options.shell } : {}),
     });
   const commandCoordinator = yield* makeProviderMaintenanceCommandCoordinator({
     makeAlreadyRunningError: () =>
@@ -332,7 +348,10 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               }),
             );
 
-            const result = yield* runMaintenanceCommand(update.executable, update.args);
+            const result = yield* runMaintenanceCommand(update.executable, update.args, {
+              ...(update.env ? { env: update.env } : {}),
+              ...(update.shell !== undefined ? { shell: update.shell } : {}),
+            });
             const finishedAt = yield* nowIso;
             if (result.timedOut || result.exitCode !== 0) {
               return yield* finish(

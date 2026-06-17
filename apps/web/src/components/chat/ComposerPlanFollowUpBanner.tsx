@@ -10,9 +10,9 @@ export const ComposerPlanFollowUpBanner = memo(function ComposerPlanFollowUpBann
     <div className="px-4 py-3.5 sm:px-5 sm:py-4">
       <div className="flex flex-wrap items-center gap-2">
         <Badge
-          variant="info"
+          variant="secondary"
           size="sm"
-          className="rounded-md px-1.5 py-0 font-semibold tracking-wide uppercase"
+          className="border border-primary/20 bg-primary/12 px-1.5 py-0 font-semibold text-primary tracking-wide uppercase"
         >
           Plan Ready
         </Badge>

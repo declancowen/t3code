@@ -8,6 +8,7 @@
  * @module provider/Drivers/KiroDriver
  */
 import { KiroSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -35,9 +36,9 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
-  makeStaticProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
   resolveProviderMaintenanceCapabilitiesEffect,
+  type ProviderMaintenanceCapabilitiesResolver,
 } from "../providerMaintenance.ts";
 import { makeKiroContinuationGroupKey, makeKiroEnvironment } from "./KiroHome.ts";
 import { makeHostKiroLatestVersionSource } from "../kiroLatestVersion.ts";
@@ -46,18 +47,32 @@ const decodeKiroSettings = Schema.decodeSync(KiroSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("kiro");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-const makeKiroMaintenanceResolver = Effect.map(makeHostKiroLatestVersionSource, (source) =>
-  makeStaticProviderMaintenanceResolver(
-    makeProviderMaintenanceCapabilities({
-      provider: DRIVER_KIND,
-      packageName: null,
-      updateExecutable: "kiro-cli",
-      updateArgs: ["update", "--non-interactive"],
-      updateLockKey: "kiro-cli",
-      ...(source ? { latestVersionSource: source } : {}),
-    }),
-  ),
-);
+
+function nonEmptyCommand(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+const makeKiroMaintenanceResolver = Effect.gen(function* () {
+  const source = yield* makeHostKiroLatestVersionSource;
+  const platform = yield* HostProcessPlatform;
+  return {
+    resolve: (options) =>
+      makeProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: null,
+        updateExecutable:
+          nonEmptyCommand(options?.resolvedCommandPath) ??
+          nonEmptyCommand(options?.binaryPath) ??
+          "kiro-cli",
+        updateArgs: ["update", "--non-interactive"],
+        updateLockKey: "kiro-cli",
+        ...(options?.env ? { updateEnv: options.env } : {}),
+        updateShell: platform === "win32",
+        ...(source ? { latestVersionSource: source } : {}),
+      }),
+  } satisfies ProviderMaintenanceCapabilitiesResolver;
+});
 
 export type KiroDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
