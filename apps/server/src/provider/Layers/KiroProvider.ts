@@ -6,6 +6,7 @@ import type {
   ServerProviderState,
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -404,9 +405,10 @@ const runKiroCommand = (
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const platform = yield* HostProcessPlatform;
     const command = ChildProcess.make(kiroSettings.binaryPath, [...args], {
       env: environment,
-      shell: process.platform === "win32",
+      shell: platform === "win32",
     });
     const child = yield* spawner.spawn(command);
     const [stdout, stderr, exitCode] = yield* Effect.all(

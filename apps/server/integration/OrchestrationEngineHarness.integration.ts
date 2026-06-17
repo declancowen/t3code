@@ -35,6 +35,7 @@ import { ProjectionCheckpointRepository } from "../src/persistence/Services/Proj
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
+import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
@@ -71,7 +72,7 @@ import {
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
 import { deriveServerPaths, ServerConfig } from "../src/config.ts";
-import { WorkspaceEntriesLive } from "../src/workspace/Layers/WorkspaceEntries.ts";
+import * as WorkspaceEntries from "../src/workspace/WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "../src/workspace/Layers/WorkspacePaths.ts";
 import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
@@ -293,6 +294,7 @@ export const makeOrchestrationIntegrationHarness = (
           Layer.provide(AnalyticsService.layerTest),
           Layer.provide(providerEventLoggersLayer),
         );
+    const providerRegistryLayer = makeProviderRegistryLayer();
 
     const checkpointStoreLayer = CheckpointStoreLive.pipe(Layer.provide(VcsDriverRegistry.layer));
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
@@ -346,7 +348,7 @@ export const makeOrchestrationIntegrationHarness = (
         }),
       ),
       Layer.provideMerge(
-        WorkspaceEntriesLive.pipe(
+        WorkspaceEntries.layer.pipe(
           Layer.provide(WorkspacePathsLive),
           Layer.provideMerge(VcsDriverRegistry.layer),
           Layer.provide(NodeServices.layer),
@@ -375,6 +377,7 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(orchestrationReactorLayer),
+      Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolverLive),
       Layer.provideMerge(ServerSettingsService.layerTest()),

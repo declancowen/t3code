@@ -10,7 +10,7 @@
  *
  *  2. **Many drivers, one registry** — the "all drivers slice" describe
  *     block below configures one instance of every shipped driver
- *     (`codex`, `claudeAgent`, `cursor`, `kiro`, `opencode`) in a single
+ *     (`codex`, `claudeAgent`, `cursor`, `kiro`, `grok`, `opencode`) in a single
  *     `ProviderInstanceConfigMap` and asserts the registry boots them all
  *     without cross-contamination. This proves the driver SPI is uniform
  *     across every provider — any driver plugs into the registry through
@@ -28,6 +28,7 @@ import {
   type ClaudeSettings,
   type CodexSettings,
   type CursorSettings,
+  type GrokSettings,
   type KiroSettings,
   type OpenCodeSettings,
   ProviderDriverKind,
@@ -42,6 +43,7 @@ import { ServerConfig } from "../../config.ts";
 import { ClaudeDriver } from "../Drivers/ClaudeDriver.ts";
 import { CodexDriver } from "../Drivers/CodexDriver.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
+import { GrokDriver } from "../Drivers/GrokDriver.ts";
 import { KiroDriver } from "../Drivers/KiroDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
@@ -86,6 +88,13 @@ const makeKiroConfig = (overrides: Partial<KiroSettings>): KiroSettings => ({
   binaryPath: "kiro-cli",
   homePath: "",
   agentName: "",
+  customModels: [],
+  ...overrides,
+});
+
+const makeGrokConfig = (overrides: Partial<GrokSettings>): GrokSettings => ({
+  enabled: false,
+  binaryPath: "grok",
   customModels: [],
   ...overrides,
 });
@@ -256,12 +265,14 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const claudeId = ProviderInstanceId.make("claude_default");
       const cursorId = ProviderInstanceId.make("cursor_default");
       const kiroId = ProviderInstanceId.make("kiro_default");
+      const grokId = ProviderInstanceId.make("grok_default");
       const openCodeId = ProviderInstanceId.make("opencode_default");
 
       const codexDriverKind = ProviderDriverKind.make("codex");
       const claudeDriverKind = ProviderDriverKind.make("claudeAgent");
       const cursorDriverKind = ProviderDriverKind.make("cursor");
       const kiroDriverKind = ProviderDriverKind.make("kiro");
+      const grokDriverKind = ProviderDriverKind.make("grok");
       const openCodeDriverKind = ProviderDriverKind.make("opencode");
 
       const configMap: ProviderInstanceConfigMap = {
@@ -292,6 +303,12 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
           enabled: false,
           config: makeKiroConfig({ homePath: "/home/julius/.kiro-work" }),
         },
+        [grokId]: {
+          driver: grokDriverKind,
+          displayName: "Grok",
+          enabled: false,
+          config: makeGrokConfig({}),
+        },
         [openCodeId]: {
           driver: openCodeDriverKind,
           displayName: "OpenCode",
@@ -301,7 +318,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       };
 
       const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [CodexDriver, ClaudeDriver, CursorDriver, KiroDriver, OpenCodeDriver],
+        drivers: [CodexDriver, ClaudeDriver, CursorDriver, KiroDriver, GrokDriver, OpenCodeDriver],
         configMap,
       });
 
@@ -311,9 +328,9 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(unavailable).toEqual([]);
 
       const instances = yield* registry.listInstances;
-      expect(instances).toHaveLength(5);
+      expect(instances).toHaveLength(6);
       expect(instances.map((instance) => instance.instanceId).toSorted()).toEqual(
-        [codexId, claudeId, cursorId, kiroId, openCodeId].toSorted(),
+        [codexId, claudeId, cursorId, kiroId, grokId, openCodeId].toSorted(),
       );
 
       // Instance lookup by id resolves each instance to its own bundle —
@@ -323,16 +340,19 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const claude = yield* registry.getInstance(claudeId);
       const cursor = yield* registry.getInstance(cursorId);
       const kiro = yield* registry.getInstance(kiroId);
+      const grok = yield* registry.getInstance(grokId);
       const openCode = yield* registry.getInstance(openCodeId);
       expect(codex?.driverKind).toBe(codexDriverKind);
       expect(claude?.driverKind).toBe(claudeDriverKind);
       expect(cursor?.driverKind).toBe(cursorDriverKind);
       expect(kiro?.driverKind).toBe(kiroDriverKind);
+      expect(grok?.driverKind).toBe(grokDriverKind);
       expect(openCode?.driverKind).toBe(openCodeDriverKind);
       expect(codex?.displayName).toBe("Codex");
       expect(claude?.displayName).toBe("Claude");
       expect(cursor?.displayName).toBe("Cursor");
       expect(kiro?.displayName).toBe("Kiro");
+      expect(grok?.displayName).toBe("Grok");
       expect(openCode?.displayName).toBe("OpenCode");
 
       // Every instance owns its own set of closures — no sharing across
@@ -345,6 +365,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.adapter,
         cursor!.adapter,
         kiro!.adapter,
+        grok!.adapter,
         openCode!.adapter,
       ];
       expect(new Set(adapters).size).toBe(adapters.length);
@@ -353,6 +374,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.textGeneration,
         cursor!.textGeneration,
         kiro!.textGeneration,
+        grok!.textGeneration,
         openCode!.textGeneration,
       ];
       expect(new Set(textGenerations).size).toBe(textGenerations.length);
@@ -361,6 +383,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.snapshot,
         cursor!.snapshot,
         kiro!.snapshot,
+        grok!.snapshot,
         openCode!.snapshot,
       ];
       expect(new Set(snapshots).size).toBe(snapshots.length);
@@ -396,6 +419,12 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(kiroSnapshot.driver).toBe(kiroDriverKind);
       expect(kiroSnapshot.enabled).toBe(false);
       expect(kiroSnapshot.continuation?.groupKey).toBe("kiro:home:/home/julius/.kiro-work");
+
+      const grokSnapshot = yield* grok!.snapshot.getSnapshot;
+      expect(grokSnapshot.instanceId).toBe(grokId);
+      expect(grokSnapshot.driver).toBe(grokDriverKind);
+      expect(grokSnapshot.enabled).toBe(false);
+      expect(grokSnapshot.continuation?.groupKey).toBe(`${grokDriverKind}:instance:${grokId}`);
 
       const openCodeSnapshot = yield* openCode!.snapshot.getSnapshot;
       expect(openCodeSnapshot.instanceId).toBe(openCodeId);

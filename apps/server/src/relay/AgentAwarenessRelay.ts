@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import {
   RELAY_ACTIVITY_PUBLISH_TYP,
   signRelayJwt,
@@ -303,7 +304,7 @@ const make = Effect.gen(function* () {
     }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
     if (!relayConfig) {
-      yield* Effect.logDebug("agent activity publish skipped; T3 Cloud config missing", {
+      yield* Effect.logDebug("agent activity publish skipped; T3 Connect config missing", {
         threadId,
       });
       return;
@@ -409,6 +410,7 @@ const make = Effect.gen(function* () {
         });
       }),
       Effect.withSpan("AgentAwarenessRelay.publishThread"),
+      withRelayClientTracing,
     );
 
   const publishActiveThreadsUnsafe = Effect.gen(function* () {
@@ -421,7 +423,7 @@ const make = Effect.gen(function* () {
     }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
     if (!relayConfig) {
-      yield* Effect.logDebug("agent activity snapshot skipped; T3 Cloud config missing");
+      yield* Effect.logDebug("agent activity snapshot skipped; T3 Connect config missing");
       return false;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
@@ -459,7 +461,7 @@ const make = Effect.gen(function* () {
     function* () {
       const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
       if (!relayConfig) {
-        yield* Effect.logInfo("agent activity publishing standby; T3 Cloud config missing");
+        yield* Effect.logInfo("agent activity publishing standby; T3 Connect config missing");
       } else {
         yield* Effect.logInfo("agent activity publishing enabled", {
           relayUrl: relayConfig.url,

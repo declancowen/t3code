@@ -40,24 +40,23 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import { makeKiroContinuationGroupKey, makeKiroEnvironment } from "./KiroHome.ts";
-import { makeKiroLatestVersionSource } from "../kiroLatestVersion.ts";
+import { makeHostKiroLatestVersionSource } from "../kiroLatestVersion.ts";
 
 const decodeKiroSettings = Schema.decodeSync(KiroSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("kiro");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-// Kiro CLI ships outside npm, so update detection reads its release manifest
-// (the same index `kiro-cli update` consults) instead of the npm registry.
-const KIRO_LATEST_VERSION_SOURCE = makeKiroLatestVersionSource();
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-    updateExecutable: "kiro-cli",
-    updateArgs: ["update", "--non-interactive"],
-    updateLockKey: "kiro-cli",
-    ...(KIRO_LATEST_VERSION_SOURCE ? { latestVersionSource: KIRO_LATEST_VERSION_SOURCE } : {}),
-  }),
+const makeKiroMaintenanceResolver = Effect.map(makeHostKiroLatestVersionSource, (source) =>
+  makeStaticProviderMaintenanceResolver(
+    makeProviderMaintenanceCapabilities({
+      provider: DRIVER_KIND,
+      packageName: null,
+      updateExecutable: "kiro-cli",
+      updateArgs: ["update", "--non-interactive"],
+      updateLockKey: "kiro-cli",
+      ...(source ? { latestVersionSource: source } : {}),
+    }),
+  ),
 );
 
 export type KiroDriverEnv =
@@ -105,10 +104,14 @@ export const KiroDriver: ProviderDriver<KiroSettings, KiroDriverEnv> = {
         driverKind: DRIVER_KIND,
         instanceId,
       });
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+      const maintenanceResolver = yield* makeKiroMaintenanceResolver;
+      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+        maintenanceResolver,
+        {
+          binaryPath: effectiveConfig.binaryPath,
+          env: processEnv,
+        },
+      );
       const continuationGroupKey = yield* makeKiroContinuationGroupKey(effectiveConfig, baseEnv);
       const stampIdentity = withInstanceIdentity({
         instanceId,

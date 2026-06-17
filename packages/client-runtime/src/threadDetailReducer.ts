@@ -8,6 +8,7 @@ import type {
   OrchestrationLatestTurn,
   OrchestrationMessage,
   OrchestrationQueuedMessage,
+  OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadActivity,
   TurnId,
@@ -292,20 +293,29 @@ export function applyThreadDetailEvent(
         : Arr.append(thread.messages, message);
       const cappedMessages = Arr.takeRight(messages, limits.maxMessages);
 
-      // Update latestTurn for assistant messages bound to a turn.
+      // Update latestTurn for assistant messages bound to a turn. A completed
+      // assistant message only settles the turn once the session is no longer
+      // running it — providers may emit several assistant messages per turn
+      // (commentary between tool calls), and the turn must stay unsettled
+      // until the provider reports turn end.
+      const turnStillRunning =
+        event.payload.turnId !== null &&
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId === event.payload.turnId;
+      const settlesTurn = !event.payload.streaming && !turnStillRunning;
       const latestTurn: OrchestrationThread["latestTurn"] =
         event.payload.role === "assistant" &&
         event.payload.turnId !== null &&
         (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
           ? {
               turnId: event.payload.turnId,
-              state: event.payload.streaming
-                ? "running"
-                : thread.latestTurn?.state === "interrupted"
+              state: settlesTurn
+                ? thread.latestTurn?.state === "interrupted"
                   ? "interrupted"
                   : thread.latestTurn?.state === "error"
                     ? "error"
-                    : "completed",
+                    : "completed"
+                : "running",
               requestedAt:
                 thread.latestTurn?.turnId === event.payload.turnId
                   ? thread.latestTurn.requestedAt
@@ -314,11 +324,11 @@ export function applyThreadDetailEvent(
                 thread.latestTurn?.turnId === event.payload.turnId
                   ? (thread.latestTurn.startedAt ?? event.payload.createdAt)
                   : event.payload.createdAt,
-              completedAt: event.payload.streaming
-                ? thread.latestTurn?.turnId === event.payload.turnId
+              completedAt: settlesTurn
+                ? event.payload.updatedAt
+                : thread.latestTurn?.turnId === event.payload.turnId
                   ? (thread.latestTurn.completedAt ?? null)
-                  : null
-                : event.payload.updatedAt,
+                  : null,
               assistantMessageId: event.payload.messageId,
             }
           : thread.latestTurn;
@@ -347,6 +357,9 @@ export function applyThreadDetailEvent(
 
     // ── Session ─────────────────────────────────────────────────────
     case "thread.session-set": {
+      // Leaving the "running" session status is the turn-end signal: settle a
+      // still-running latest turn so its duration reflects the whole turn.
+      const settledTurnState = settledTurnStateForSessionStatus(event.payload.session.status);
       const latestTurn: OrchestrationLatestTurn | null =
         event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
           ? {
@@ -366,7 +379,18 @@ export function applyThreadDetailEvent(
                   ? thread.latestTurn.assistantMessageId
                   : null,
             }
-          : thread.latestTurn;
+          : thread.latestTurn !== null &&
+              thread.latestTurn.state === "running" &&
+              settledTurnState !== null
+            ? {
+                ...thread.latestTurn,
+                state: settledTurnState,
+                // A running turn's completedAt can only hold a mid-turn
+                // placeholder checkpoint timestamp — the session leaving
+                // "running" is the authoritative turn end.
+                completedAt: event.payload.session.updatedAt,
+              }
+            : thread.latestTurn;
 
       return {
         kind: "updated",
@@ -440,8 +464,14 @@ export function applyThreadDetailEvent(
         Arr.takeRight(limits.maxCheckpoints),
       );
 
+      // Mid-turn diff updates produce placeholder checkpoints; record the
+      // checkpoint, but don't settle a turn its session is still running.
+      const diffTurnStillRunning =
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId === event.payload.turnId;
       const latestTurn =
-        thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId
+        !diffTurnStillRunning &&
+        (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
           ? {
               turnId: event.payload.turnId,
               state: checkpointStatusToTurnState(event.payload.status),
@@ -541,6 +571,29 @@ export function applyThreadDetailEvent(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Turn state to settle a still-running latest turn with when its session
+ * leaves the "running" status, or null while the session is (re)starting or
+ * running and the turn must stay unsettled.
+ */
+function settledTurnStateForSessionStatus(
+  status: OrchestrationSession["status"],
+): "completed" | "interrupted" | "error" | null {
+  switch (status) {
+    case "idle":
+    case "ready":
+      return "completed";
+    case "error":
+      return "error";
+    case "interrupted":
+    case "stopped":
+      return "interrupted";
+    case "starting":
+    case "running":
+      return null;
+  }
+}
 
 function checkpointStatusToTurnState(
   status: "ready" | "missing" | "error",

@@ -318,6 +318,14 @@ describe("web cloud link environment client", () => {
         method: "POST",
         url: "https://managed.example.test/oauth/token",
       });
+      const traceparents = fetchMock.mock.calls.map(
+        (call) => call[1]?.headers.traceparent as string | undefined,
+      );
+      expect(traceparents.every((traceparent) => typeof traceparent === "string")).toBe(true);
+      expect(new Set(traceparents.map((traceparent) => traceparent?.split("-")[1])).size).toBe(1);
+      expect(connection.relayTraceHeaders.traceparent?.split("-")[1]).toBe(
+        traceparents[0]?.split("-")[1],
+      );
     }),
   );
 
@@ -514,7 +522,7 @@ describe("web cloud link environment client", () => {
         expect(fetchMock.mock.calls[0]?.[1]?.credentials).not.toBe("include");
 
         expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
-          "http://127.0.0.1:3000/api/cloud/link-proof",
+          "http://127.0.0.1:3000/api/connect/link-proof",
         );
         expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
           method: "POST",
@@ -553,7 +561,7 @@ describe("web cloud link environment client", () => {
         });
 
         expect(String(fetchMock.mock.calls[3]?.[0])).toBe(
-          "http://127.0.0.1:3000/api/cloud/relay-config",
+          "http://127.0.0.1:3000/api/connect/relay-config",
         );
         expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
           method: "POST",
@@ -615,7 +623,7 @@ describe("web cloud link environment client", () => {
         publishAgentActivity: false,
       });
       expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-        "http://127.0.0.1:3000/api/cloud/link-state",
+        "http://127.0.0.1:3000/api/connect/link-state",
       );
       expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
         method: "GET",
@@ -654,7 +662,7 @@ describe("web cloud link environment client", () => {
         }),
       );
 
-      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:3000/api/cloud/unlink");
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:3000/api/connect/unlink");
       expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
         method: "POST",
         credentials: "include",
@@ -698,7 +706,7 @@ describe("web cloud link environment client", () => {
       );
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:3000/api/cloud/unlink");
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:3000/api/connect/unlink");
       expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
         method: "POST",
         credentials: "include",

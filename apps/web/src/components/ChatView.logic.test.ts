@@ -12,12 +12,15 @@ import { type EnvironmentState, useStore } from "../store";
 import { type Thread } from "../types";
 
 import {
+  MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
+  reconcileRetainedMountedThreadIds,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
@@ -85,6 +88,30 @@ describe("deriveComposerSendState", () => {
     expect(state.hasSendableContent).toBe(true);
     expect(state.hasTextualSendableContent).toBe(false);
   });
+
+  it("treats element contexts as sendable content (no text, no images, no terminals)", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 0,
+      terminalContexts: [],
+      elementContextCount: 1,
+    });
+
+    expect(state.trimmedPrompt).toBe("");
+    expect(state.expiredTerminalContextCount).toBe(0);
+    expect(state.hasSendableContent).toBe(true);
+  });
+
+  it("does NOT treat zero element contexts as sendable", () => {
+    expect(
+      deriveComposerSendState({
+        prompt: "",
+        imageCount: 0,
+        terminalContexts: [],
+        elementContextCount: 0,
+      }).hasSendableContent,
+    ).toBe(false);
+  });
 });
 
 describe("buildExpiredTerminalContextToastCopy", () => {
@@ -99,6 +126,73 @@ describe("buildExpiredTerminalContextToastCopy", () => {
     expect(buildExpiredTerminalContextToastCopy(2, "omitted")).toEqual({
       title: "Expired terminal contexts omitted from message",
       description: "Re-add it if you want that terminal output included.",
+    });
+  });
+});
+
+describe("getStartedThreadModelChangeBlockReason", () => {
+  const providers = [
+    {
+      instanceId: ProviderInstanceId.make("codex"),
+    },
+    {
+      instanceId: ProviderInstanceId.make("grok"),
+      requiresNewThreadForModelChange: true,
+    },
+  ];
+
+  it("allows model changes before a provider session has started", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: false,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-other",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("allows unchanged model selections for restricted providers", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("blocks started-session model changes when either provider requires a new thread", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
+      }),
+    ).toEqual({
+      title: "Start a new chat to change models",
+      description:
+        "This provider does not allow switching models after a conversation has started.",
     });
   });
 });
@@ -192,6 +286,50 @@ describe("reconcileMountedTerminalThreadIds", () => {
         activeThreadTerminalOpen: false,
       }),
     ).toEqual(currentThreadIds.slice(-MAX_HIDDEN_MOUNTED_TERMINAL_THREADS));
+  });
+});
+
+describe("reconcileRetainedMountedThreadIds", () => {
+  it("retains hidden open threads and adds the active open thread", () => {
+    expect(
+      reconcileRetainedMountedThreadIds({
+        currentThreadIds: [ThreadId.make("thread-hidden")],
+        openThreadIds: [ThreadId.make("thread-hidden")],
+        activeThreadId: ThreadId.make("thread-active"),
+        activeThreadOpen: true,
+        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
+      }),
+    ).toEqual([ThreadId.make("thread-hidden"), ThreadId.make("thread-active")]);
+  });
+
+  it("can retain the active thread as hidden when it is inactive", () => {
+    expect(
+      reconcileRetainedMountedThreadIds({
+        currentThreadIds: [ThreadId.make("thread-active")],
+        openThreadIds: [ThreadId.make("thread-active")],
+        activeThreadId: ThreadId.make("thread-active"),
+        activeThreadOpen: false,
+        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
+        retainInactiveActiveThread: true,
+      }),
+    ).toEqual([ThreadId.make("thread-active")]);
+  });
+
+  it("evicts the oldest hidden threads beyond the configured cap", () => {
+    const currentThreadIds = Array.from(
+      { length: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS + 2 },
+      (_, index) => ThreadId.make(`thread-${index + 1}`),
+    );
+
+    expect(
+      reconcileRetainedMountedThreadIds({
+        currentThreadIds,
+        openThreadIds: currentThreadIds,
+        activeThreadId: null,
+        activeThreadOpen: false,
+        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
+      }),
+    ).toEqual(currentThreadIds.slice(-MAX_HIDDEN_MOUNTED_PREVIEW_THREADS));
   });
 });
 

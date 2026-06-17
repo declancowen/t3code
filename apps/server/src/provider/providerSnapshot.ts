@@ -45,6 +45,7 @@ export interface ServerProviderPresentation {
   readonly displayName: string;
   readonly badgeLabel?: string;
   readonly showInteractionModeToggle?: boolean;
+  readonly requiresNewThreadForModelChange?: boolean;
 }
 
 export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
@@ -74,7 +75,7 @@ export const spawnAndCollect = (binaryPath: string, command: ChildProcess.Comman
     );
 
     const result: CommandResult = { stdout, stderr, code: exitCode };
-    if (isWindowsCommandNotFound(exitCode, stderr)) {
+    if (yield* isWindowsCommandNotFound(exitCode, stderr)) {
       return yield* new ProviderCommandExecutionError({ message: `spawn ${binaryPath} ENOENT` });
     }
     return result;
@@ -213,6 +214,9 @@ export function buildServerProvider(input: {
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
     ...(typeof input.presentation.showInteractionModeToggle === "boolean"
       ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
+      : {}),
+    ...(typeof input.presentation.requiresNewThreadForModelChange === "boolean"
+      ? { requiresNewThreadForModelChange: input.presentation.requiresNewThreadForModelChange }
       : {}),
     enabled: input.enabled,
     installed: input.probe.installed,

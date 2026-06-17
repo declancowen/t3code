@@ -9,6 +9,7 @@ import {
   type TerminalOpenInput,
   type TerminalRestartInput,
 } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -200,11 +201,11 @@ const multiTerminalHistoryLogPath = (
 
 interface CreateManagerOptions {
   shellResolver?: () => string;
-  platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
     readonly hasRunningSubprocess: boolean;
     readonly childCommand: string | null;
+    readonly processIds: ReadonlyArray<number>;
   }>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
@@ -240,7 +241,6 @@ const createManager = (
         historyLineLimit,
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
-        ...(options.platform !== undefined ? { platform: options.platform } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.subprocessInspector !== undefined
           ? { subprocessInspector: options.subprocessInspector }
@@ -270,12 +270,13 @@ const createManager = (
     }),
   );
 
+const withHostPlatform = (platform: NodeJS.Platform) =>
+  Layer.succeed(HostProcessPlatform, platform);
+
 it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
-  const itEffectSkipOnWindows = process.platform === "win32" ? it.effect.skip : it.effect;
-
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
@@ -415,8 +416,10 @@ it.layer(
       fs.writeFileString(filePath, contents),
     );
 
-  itEffectSkipOnWindows("preserves non-notFound cwd stat failures", () =>
+  it.effect("preserves non-notFound cwd stat failures", () =>
     Effect.gen(function* () {
+      if ((yield* HostProcessPlatform) === "win32") return;
+
       const path = yield* Path.Path;
 
       const { manager, baseDir } = yield* createManager();
@@ -746,7 +749,8 @@ it.layer(
       let inspect: {
         readonly hasRunningSubprocess: boolean;
         readonly childCommand: string | null;
-      } = { hasRunningSubprocess: false, childCommand: null };
+        readonly processIds: ReadonlyArray<number>;
+      } = { hasRunningSubprocess: false, childCommand: null, processIds: [] };
       const { manager, getEvents } = yield* createManager(5, {
         subprocessInspector: () => Effect.succeed(inspect),
         subprocessPollIntervalMs: 20,
@@ -755,7 +759,7 @@ it.layer(
       yield* manager.open(openInput());
       expect((yield* getEvents).some((event) => event.type === "activity")).toBe(false);
 
-      inspect = { hasRunningSubprocess: true, childCommand: "vim" };
+      inspect = { hasRunningSubprocess: true, childCommand: "vim", processIds: [100, 101] };
       yield* waitFor(
         Effect.map(getEvents, (events) =>
           events.some(
@@ -768,7 +772,7 @@ it.layer(
         "1200 millis",
       );
 
-      inspect = { hasRunningSubprocess: false, childCommand: null };
+      inspect = { hasRunningSubprocess: false, childCommand: null, processIds: [] };
       yield* waitFor(
         Effect.map(getEvents, (events) =>
           events.some(
@@ -789,7 +793,11 @@ it.layer(
       const { manager } = yield* createManager(5, {
         subprocessInspector: () => {
           checks += 1;
-          return Effect.succeed({ hasRunningSubprocess: false, childCommand: null });
+          return Effect.succeed({
+            hasRunningSubprocess: false,
+            childCommand: null,
+            processIds: [],
+          });
         },
         subprocessPollIntervalMs: 20,
       });
@@ -1077,10 +1085,9 @@ it.layer(
 
   it.effect("retries with fallback shells when preferred shell spawn fails", () =>
     Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
       const missingShell =
-        process.platform === "win32"
-          ? "C:\\definitely\\missing-shell.exe"
-          : "/definitely/missing-shell -l";
+        platform === "win32" ? "C:\\definitely\\missing-shell.exe" : "/definitely/missing-shell -l";
       const { manager, ptyAdapter } = yield* createManager(5, {
         shellResolver: () => missingShell,
       });
@@ -1091,10 +1098,10 @@ it.layer(
       assert.equal(snapshot.status, "running");
       expect(ptyAdapter.spawnInputs.length).toBeGreaterThanOrEqual(2);
       expect(ptyAdapter.spawnInputs[0]?.shell).toBe(
-        process.platform === "win32" ? missingShell : "/definitely/missing-shell",
+        platform === "win32" ? missingShell : "/definitely/missing-shell",
       );
 
-      if (process.platform === "win32") {
+      if (platform === "win32") {
         expect(
           ptyAdapter.spawnInputs.some(
             (input) =>
@@ -1116,13 +1123,12 @@ it.layer(
   it.effect("prefers PowerShell over ComSpec for Windows terminals", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager(5, {
-        platform: "win32",
         env: {
           ComSpec: "C:\\Windows\\System32\\cmd.exe",
           PATH: "C:\\Windows\\System32",
           SystemRoot: "C:\\Windows",
         },
-      });
+      }).pipe(Effect.provide(withHostPlatform("win32")));
 
       yield* manager.open(openInput());
 
@@ -1137,15 +1143,16 @@ it.layer(
 
   it.effect("falls back to built-in PowerShell by absolute path on Windows", () =>
     Effect.gen(function* () {
-      const { manager, ptyAdapter } = yield* createManager(5, {
-        platform: "win32",
+      const ptyAdapter = new FakePtyAdapter();
+      const { manager } = yield* createManager(5, {
+        ptyAdapter,
+        shellResolver: () => "C:\\missing\\custom-shell.exe",
         env: {
           ComSpec: "C:\\Windows\\System32\\cmd.exe",
           PATH: "C:\\Windows\\System32",
           SystemRoot: "C:\\Windows",
         },
-        shellResolver: () => "C:\\missing\\custom-shell.exe",
-      });
+      }).pipe(Effect.provide(withHostPlatform("win32")));
       ptyAdapter.spawnFailures.push(
         new Error("spawn custom-shell.exe ENOENT"),
         new Error("spawn pwsh.exe ENOENT"),
@@ -1165,48 +1172,27 @@ it.layer(
 
   it.effect("filters app runtime env variables from terminal sessions", () =>
     Effect.gen(function* () {
-      const originalValues = new Map<string, string | undefined>();
-      const setEnv = (key: string, value: string | undefined) => {
-        if (!originalValues.has(key)) {
-          originalValues.set(key, process.env[key]);
-        }
-        if (value === undefined) {
-          delete process.env[key];
-          return;
-        }
-        process.env[key] = value;
-      };
-      const restoreEnv = () => {
-        for (const [key, value] of originalValues) {
-          if (value === undefined) {
-            delete process.env[key];
-          } else {
-            process.env[key] = value;
-          }
-        }
-      };
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: {
+          PORT: "5173",
+          T3CODE_PORT: "3773",
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+          HOME: "/private/tmp/t3code-home",
+          TEST_TERMINAL_KEEP: "keep-me",
+        },
+      });
+      yield* manager.open(openInput());
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
 
-      setEnv("PORT", "5173");
-      setEnv("T3CODE_PORT", "3773");
-      setEnv("VITE_DEV_SERVER_URL", "http://localhost:5173");
-      setEnv("HOME", "/private/tmp/t3code-home");
-      setEnv("TEST_TERMINAL_KEEP", "keep-me");
-
-      try {
-        const { manager, ptyAdapter } = yield* createManager();
-        yield* manager.open(openInput());
-        const spawnInput = ptyAdapter.spawnInputs[0];
-        expect(spawnInput).toBeDefined();
-        if (!spawnInput) return;
-
-        expect(spawnInput.env.PORT).toBeUndefined();
-        expect(spawnInput.env.T3CODE_PORT).toBeUndefined();
-        expect(spawnInput.env.VITE_DEV_SERVER_URL).toBeUndefined();
-        expect(spawnInput.env.HOME).toBe(NodeOS.userInfo().homedir);
-        expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
-      } finally {
-        restoreEnv();
-      }
+      expect(spawnInput.env.PORT).toBeUndefined();
+      expect(spawnInput.env.T3CODE_PORT).toBeUndefined();
+      expect(spawnInput.env.VITE_DEV_SERVER_URL).toBeUndefined();
+      expect(spawnInput.env.HOME).toBe(NodeOS.userInfo().homedir);
+      // Arbitrary host env vars must pass through — terminals inherit the
+      // user's environment apart from the explicit blocklist.
+      expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
     }),
   );
 
@@ -1234,7 +1220,7 @@ it.layer(
 
   it.effect("starts zsh with prompt spacer disabled to avoid `%` end markers", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if ((yield* HostProcessPlatform) === "win32") return;
       const { manager, ptyAdapter } = yield* createManager(5, {
         shellResolver: () => "/bin/zsh",
       });

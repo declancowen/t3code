@@ -5,6 +5,8 @@ import {
 } from "@t3tools/contracts";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import { resolveCommandPath } from "@t3tools/shared/shell";
+import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,6 +35,25 @@ export interface ProviderLatestVersionSource {
   readonly fetchLatestVersion: Effect.Effect<string | null, never, HttpClient.HttpClient>;
 }
 
+const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    Object.entries(input).flatMap(([key, value]) =>
+      Option.match(value, {
+        onNone: () => [],
+        onSome: (resolved) => [[key, resolved]],
+      }),
+    ),
+  );
+
+const CommandLookupEnvConfig = Config.all({
+  PATH: Config.string("PATH").pipe(Config.option),
+  Path: Config.string("Path").pipe(Config.option),
+  path: Config.string("path").pipe(Config.option),
+  PATHEXT: Config.string("PATHEXT").pipe(Config.option),
+}).pipe(Config.map(compactEnv));
+
+const readCommandLookupEnv = CommandLookupEnvConfig.pipe(Effect.orElseSucceed(() => ({})));
+
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
@@ -55,7 +76,7 @@ export interface ProviderMaintenanceCommandAction {
 export interface ProviderMaintenanceCapabilityResolutionOptions {
   readonly binaryPath?: string | null;
   readonly env?: NodeJS.ProcessEnv;
-  readonly platform?: NodeJS.Platform;
+  readonly resolvedCommandPath?: string | null;
   readonly realCommandPath?: string | null;
 }
 
@@ -77,19 +98,20 @@ export interface PackageManagedProviderMaintenanceDefinition {
   } | null;
 }
 
-interface LatestVersionCacheEntry {
+export interface ProviderVersionCacheEntry {
   readonly expiresAt: number;
   readonly version: string | null;
 }
 
-const latestVersionCache = new Map<string, LatestVersionCacheEntry>();
+export const ProviderVersionCache = Context.Reference<Map<string, ProviderVersionCacheEntry>>(
+  "@t3tools/server/providerMaintenance/ProviderVersionCache",
+  {
+    defaultValue: () => new Map(),
+  },
+);
 const NpmLatestVersionResponse = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
-
-export function clearLatestProviderVersionCacheForTests(): void {
-  latestVersionCache.clear();
-}
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -276,10 +298,7 @@ export function resolvePackageManagedProviderMaintenance(
   }
 
   const resolvedCommandPath =
-    resolveCommandPath(binaryPath, {
-      ...(options?.platform ? { platform: options.platform } : {}),
-      ...(options?.env ? { env: options.env } : {}),
-    }) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
+    options?.resolvedCommandPath ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
 
   if (resolvedCommandPath) {
     const commandPaths = [
@@ -360,11 +379,11 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
     return resolver.resolve(options);
   }
 
+  const env = options?.env ?? (yield* readCommandLookupEnv);
   const resolvedCommandPath =
-    resolveCommandPath(binaryPath, {
-      ...(options?.platform ? { platform: options.platform } : {}),
-      ...(options?.env ? { env: options.env } : {}),
-    }) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
+    (yield* resolveCommandPath(binaryPath, { env }).pipe(
+      Effect.catchTag("CommandResolutionError", () => Effect.succeed(null)),
+    )) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
   if (!resolvedCommandPath) {
     return resolver.resolve(options);
   }
@@ -375,6 +394,8 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
     .pipe(Effect.orElseSucceed(() => resolvedCommandPath));
   return resolver.resolve({
     ...options,
+    env,
+    resolvedCommandPath,
     realCommandPath,
   });
 });
@@ -451,6 +472,7 @@ const fetchCachedLatestVersion = Effect.fn("fetchCachedLatestVersion")(function*
   readonly cacheKey: string;
   readonly fetch: Effect.Effect<string | null, never, HttpClient.HttpClient>;
 }) {
+  const latestVersionCache = yield* ProviderVersionCache;
   const cached = latestVersionCache.get(input.cacheKey);
   const now = DateTime.toEpochMillis(yield* DateTime.now);
   if (cached && cached.expiresAt > now) {

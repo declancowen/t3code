@@ -4,6 +4,7 @@ import {
   type ProviderSendTurnInput,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -38,6 +39,7 @@ export interface CodexSkillDiscoveryOptions {
   readonly codexHomePath?: string | undefined;
   readonly environment?: NodeJS.ProcessEnv | undefined;
   readonly homeDir?: string | undefined;
+  readonly platform?: NodeJS.Platform | undefined;
 }
 
 export interface CodexPromptAugmentationOptions extends CodexSkillDiscoveryOptions {
@@ -127,6 +129,7 @@ export function buildCodexSkillRoots(
 ): ReadonlyArray<CodexSkillRoot> {
   const env = options.environment ?? process.env;
   const homeDir = options.homeDir ?? env.HOME ?? os.homedir();
+  const platform = options.platform;
   const codexHome = expandHomePath(
     options.codexHomePath?.trim() || env.CODEX_HOME?.trim() || DEFAULT_CODEX_HOME,
   );
@@ -150,7 +153,7 @@ export function buildCodexSkillRoots(
     roots.push({ path: path.join(expandHomePath(homeDir), ".agents", "skills"), scope: "user" });
   }
 
-  if (process.platform !== "win32") {
+  if (platform !== "win32") {
     roots.push({ path: "/etc/codex/skills", scope: "admin" });
   }
 
@@ -326,12 +329,15 @@ async function discoverCodexSkillsUnsafe(
 export function discoverCodexSkills(
   options: CodexSkillDiscoveryOptions = {},
 ): Effect.Effect<ReadonlyArray<ServerProviderSkill>> {
-  return Effect.promise(async () => {
-    try {
-      return await discoverCodexSkillsUnsafe(options);
-    } catch {
-      return [];
-    }
+  return Effect.gen(function* () {
+    const platform = options.platform ?? (yield* HostProcessPlatform);
+    return yield* Effect.promise(async () => {
+      try {
+        return await discoverCodexSkillsUnsafe({ ...options, platform });
+      } catch {
+        return [];
+      }
+    });
   });
 }
 

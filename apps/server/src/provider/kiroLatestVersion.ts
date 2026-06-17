@@ -11,6 +11,7 @@
  * @module provider/kiroLatestVersion
  */
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -169,14 +170,14 @@ export const fetchKiroLatestVersion = Effect.fn("fetchKiroLatestVersion")(functi
  * running platform has no published Kiro release (so the provider falls back to
  * an `unknown` version advisory instead of a bogus update prompt).
  */
-export function makeKiroLatestVersionSource(input?: {
-  readonly platform?: NodeJS.Platform;
-  readonly arch?: string;
+export function makeKiroLatestVersionSource(input: {
+  readonly platform: NodeJS.Platform;
+  readonly arch: string;
   readonly baseUrl?: string;
 }): ProviderLatestVersionSource | null {
   const target = resolveKiroPlatformTarget({
-    platform: input?.platform ?? process.platform,
-    arch: input?.arch ?? process.arch,
+    platform: input.platform,
+    arch: input.arch,
   });
   if (!target) {
     return null;
@@ -185,7 +186,13 @@ export function makeKiroLatestVersionSource(input?: {
     cacheKey: `kiro-release:${target.os}:${target.architecture ?? "universal"}`,
     fetchLatestVersion: fetchKiroLatestVersion({
       target,
-      ...(input?.baseUrl ? { baseUrl: input.baseUrl } : {}),
+      ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     }),
   };
 }
+
+export const makeHostKiroLatestVersionSource = Effect.gen(function* () {
+  const platform = yield* HostProcessPlatform;
+  const arch = yield* HostProcessArchitecture;
+  return makeKiroLatestVersionSource({ platform, arch });
+});

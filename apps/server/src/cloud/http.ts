@@ -29,6 +29,7 @@ import {
   RelayLinkProofRequest,
   RelayManagedEndpointOrigin,
 } from "@t3tools/contracts/relay";
+import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import {
   normalizeRelayIssuer,
   RELAY_HEALTH_REQUEST_TYP,
@@ -47,7 +48,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse, HttpTraceContext } from "effect/unstable/http";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
@@ -109,6 +110,19 @@ const requireRelayUrl = relayUrlConfig.pipe(
       }),
   ),
 );
+
+export const traceRelayBrokerHandler = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | HttpServerRequest.HttpServerRequest> =>
+  HttpServerRequest.HttpServerRequest.pipe(
+    Effect.flatMap((request) =>
+      Option.match(HttpTraceContext.fromHeaders(request.headers), {
+        onNone: () => effect,
+        onSome: (parent) => effect.pipe(Effect.withParentSpan(parent)),
+      }),
+    ),
+    withRelayClientTracing,
+  );
 
 function bytesToString(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
@@ -509,9 +523,10 @@ const relayClientRequest = <A>(
     Effect.mapError(
       (cause) =>
         new EnvironmentHttpInternalServerError({
-          message: `T3 Cloud relay request failed: ${String(cause)}`,
+          message: `T3 Connect relay request failed: ${String(cause)}`,
         }),
     ),
+    withRelayClientTracing,
   );
 
 const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesiredLinkWith")(
@@ -535,7 +550,7 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
           onNone: () =>
             Effect.fail(
               new EnvironmentHttpUnauthorizedError({
-                message: "Run `t3 cloud link` to authorize this environment.",
+                message: "Run `t3 connect link` to authorize this environment.",
               }),
             ),
           onSome: Effect.succeed,
@@ -595,7 +610,7 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
     CloudCliTokenManagerError: (error) =>
       failEnvironmentCloudInternalError(error.message)(error.cause),
     SecretStoreError: failEnvironmentCloudInternalError(
-      "Could not persist desired T3 Cloud link state.",
+      "Could not persist desired T3 Connect link state.",
     ),
   }),
 );
@@ -874,7 +889,7 @@ const cloudMintCredentialHandler = Effect.fn("environment.cloud.mintCredential")
       scopes: AuthStandardClientScopes,
       subject: "cloud-connect",
       ttl: Duration.minutes(2),
-      label: "T3 Cloud connect",
+      label: "T3 Connect connect",
       proofKeyThumbprint: proof.clientProofKeyThumbprint,
     });
     const responsePayload = {
@@ -924,9 +939,9 @@ const cloudMintCredentialHandler = Effect.fn("environment.cloud.mintCredential")
   }),
 );
 
-export const cloudHttpApiLayer = HttpApiBuilder.group(
+export const connectHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
-  "cloud",
+  "connect",
   Effect.fnUntraced(function* (handlers) {
     const dependencies = yield* cloudHttpDependencies;
     return handlers
@@ -938,7 +953,7 @@ export const cloudHttpApiLayer = HttpApiBuilder.group(
       .handle("health", ({ payload }) => cloudEnvironmentHealthHandler(dependencies, payload))
       .handle("mintCredential", ({ payload }) => cloudMintCredentialHandler(dependencies, payload))
       .handle("t3MintCredential", ({ payload }) =>
-        cloudMintCredentialHandler(dependencies, payload),
+        traceRelayBrokerHandler(cloudMintCredentialHandler(dependencies, payload)),
       );
   }),
 );

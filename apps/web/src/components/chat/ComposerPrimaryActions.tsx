@@ -3,6 +3,7 @@ import { ChevronDownIcon, ChevronLeftIcon, SendHorizontalIcon, SquareIcon } from
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Spinner } from "../ui/spinner";
 
 interface PendingActionState {
   questionIndex: number;
@@ -76,24 +77,7 @@ function SendButton({
       aria-label={ariaLabel}
     >
       {busy ? (
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="animate-spin"
-          aria-hidden="true"
-        >
-          <circle
-            cx="7"
-            cy="7"
-            r="5.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeDasharray="20 12"
-          />
-        </svg>
+        <Spinner className="size-3.5" aria-hidden="true" />
       ) : (
         <SendHorizontalIcon className="size-3.5" aria-hidden="true" />
       )}
@@ -177,17 +161,15 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   if (isRunning) {
     return (
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 sm:h-8 sm:w-8"
-          {...pointerFocusProps}
-          onClick={onInterrupt}
-          aria-label="Stop generation"
-        >
-          <SquareIcon className="size-3 fill-current" aria-hidden="true" />
-        </button>
-      </div>
+      <button
+        type="button"
+        className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
+        {...pointerFocusProps}
+        onClick={onInterrupt}
+        aria-label="Stop generation"
+      >
+        <SquareIcon className="size-3 fill-current" aria-hidden="true" />
+      </button>
     );
   }
 

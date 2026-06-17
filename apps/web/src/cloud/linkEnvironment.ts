@@ -1,7 +1,7 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient, HttpTraceContext, type Headers } from "effect/unstable/http";
 import {
   EnvironmentCloudEndpointUnavailableError,
   type EnvironmentCloudLinkStateResult,
@@ -29,6 +29,7 @@ import {
   ManagedRelayDpopSigner,
   type WsRpcClient,
 } from "@t3tools/client-runtime";
+import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 
 import { ensureLocalApi } from "../localApi";
 import {
@@ -245,6 +246,7 @@ export interface CloudManagedConnection {
   readonly wsBaseUrl: string;
   readonly relayUrl: string;
   readonly accessToken: string;
+  readonly relayTraceHeaders: Headers.Headers;
 }
 
 export function collectCloudLinkTargets(input: {
@@ -437,8 +439,15 @@ export function connectManagedCloudEnvironment(input: {
       wsBaseUrl: connected.endpoint.wsBaseUrl,
       relayUrl: configuredRelayUrl,
       accessToken: session.access_token,
+      relayTraceHeaders: HttpTraceContext.toHeaders(yield* Effect.currentSpan.pipe(Effect.orDie)),
     };
-  });
+  }).pipe(
+    Effect.withSpan("relay.environment.connect", {
+      root: true,
+      attributes: { "relay.environment_id": input.environment.environmentId },
+    }),
+    withRelayClientTracing,
+  );
 }
 
 export function readPrimaryCloudLinkState(): Effect.Effect<
@@ -451,7 +460,7 @@ export function readPrimaryCloudLinkState(): Effect.Effect<
       return null;
     }
     const client = yield* makeEnvironmentHttpApiClient(resolvePrimaryEnvironmentHttpUrl("/"));
-    return yield* client.cloud
+    return yield* client.connect
       .linkState({ headers: {} })
       .pipe(
         withPrimaryEnvironmentRequestInit,
@@ -465,7 +474,7 @@ export function updatePrimaryCloudPreferences(input: {
 }): Effect.Effect<CloudLinkState, CloudEnvironmentLinkError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const client = yield* makeEnvironmentHttpApiClient(resolvePrimaryEnvironmentHttpUrl("/"));
-    return yield* client.cloud
+    return yield* client.connect
       .preferences({
         headers: {},
         payload: input,
@@ -488,7 +497,7 @@ export function unlinkPrimaryEnvironmentFromCloud(input: {
       });
     }
     const client = yield* makeEnvironmentHttpApiClient(resolvePrimaryEnvironmentHttpUrl("/"));
-    yield* client.cloud
+    yield* client.connect
       .unlink({ headers: {} })
       .pipe(
         withPrimaryEnvironmentRequestInit,
@@ -568,7 +577,7 @@ export function linkEnvironmentToCloud(input: {
           ),
         ),
       );
-    const proof = yield* environmentClient.cloud
+    const proof = yield* environmentClient.connect
       .linkProof({
         headers,
         payload: {
@@ -604,7 +613,7 @@ export function linkEnvironmentToCloud(input: {
       link,
     });
 
-    yield* environmentClient.cloud
+    yield* environmentClient.connect
       .relayConfig({
         headers,
         payload: {
@@ -656,7 +665,7 @@ export function linkPrimaryEnvironmentToCloud(input: {
           ),
         ),
       );
-    const proof = yield* environmentClient.cloud
+    const proof = yield* environmentClient.connect
       .linkProof({
         headers: {},
         payload: {
@@ -695,7 +704,7 @@ export function linkPrimaryEnvironmentToCloud(input: {
       link,
     });
 
-    yield* environmentClient.cloud
+    yield* environmentClient.connect
       .relayConfig({
         headers: {},
         payload: {
