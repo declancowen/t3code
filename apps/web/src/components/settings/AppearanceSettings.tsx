@@ -8,7 +8,7 @@ import { LaptopIcon, MoonIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 
 import { CHAT_FONT_OPTIONS, LOBSTER_THEME_COLORS, REDUCE_MOTION_OPTIONS } from "../../appearance";
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
@@ -272,8 +272,8 @@ function ReduceMotionControl({
 
 export function AppearanceSettingsPanel() {
   const { theme, setTheme } = useTheme();
-  const settings = useSettings();
-  const { updateSettings } = useUpdateSettings();
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
 
   const selectedChatFontLabel = useMemo(
     () =>

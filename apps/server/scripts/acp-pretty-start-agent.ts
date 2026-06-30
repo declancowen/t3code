@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
-import { createInterface } from "node:readline";
+import * as NodeReadline from "node:readline";
 
 type JsonRpcMessage = {
   readonly id?: string | number;
@@ -34,7 +34,7 @@ function handleMessage(message: JsonRpcMessage): void {
   }
 }
 
-const input = createInterface({ input: process.stdin });
+const input = NodeReadline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;

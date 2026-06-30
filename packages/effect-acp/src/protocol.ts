@@ -17,7 +17,6 @@ import * as AcpSchema from "./_generated/schema.gen.ts";
 import { CLIENT_METHODS } from "./_generated/meta.gen.ts";
 import * as AcpError from "./errors.ts";
 const isAcpError = Schema.is(AcpError.AcpError);
-const isAcpRequestError = Schema.is(AcpError.AcpRequestError);
 
 export interface AcpProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -82,6 +81,11 @@ export interface AcpWireCompatibilityOptions {
   readonly ignoreNonJsonStdout?: boolean;
 }
 
+interface AcpPendingRequest {
+  readonly deferred: Deferred.Deferred<unknown, AcpError.AcpError>;
+  readonly method: string;
+}
+
 const decodeSessionUpdate = Schema.decodeUnknownEffect(AcpSchema.SessionNotification);
 const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
@@ -104,9 +108,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const serverRequestIdAliases = yield* Ref.make(new Map<string, string>());
   const serverNativeRequestIds = yield* Ref.make(new Set<string>());
   const terminationHandled = yield* Ref.make(false);
-  const extPending = yield* Ref.make(
-    new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
-  );
+  const extPending = yield* Ref.make(new Map<string, AcpPendingRequest>());
 
   const logProtocol = (event: AcpProtocolLogEvent) => {
     if (event.direction === "incoming" && !options.logIncoming) {
@@ -176,16 +178,20 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       payload: message,
     });
 
+    const method = message._tag === "Request" ? message.tag : undefined;
+    const encodedRequestId =
+      message._tag === "Request"
+        ? message.id
+        : "requestId" in message
+          ? message.requestId
+          : undefined;
+    const requestId = encodedRequestId === "" ? undefined : encodedRequestId;
     const encoded = yield* Effect.try({
       try: () =>
         (message._tag === "Exit" ? encodeNonNumericExit(message) : undefined) ??
         encodeClientNotification(message) ??
         parser.encode(message),
-      catch: (cause) =>
-        new AcpError.AcpProtocolParseError({
-          detail: "Failed to encode ACP message",
-          cause,
-        }),
+      catch: (cause) => AcpError.AcpProtocolParseError.fromEncodingError(method, requestId, cause),
     });
 
     if (encoded) {
@@ -201,16 +207,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
 
   const resolveExtPending = (
     requestId: string,
-    onFound: (deferred: Deferred.Deferred<unknown, AcpError.AcpError>) => Effect.Effect<void>,
+    onFound: (pendingRequest: AcpPendingRequest) => Effect.Effect<void>,
   ) =>
     Ref.modify(extPending, (pending) => {
-      const deferred = pending.get(requestId);
-      if (!deferred) {
+      const pendingRequest = pending.get(requestId);
+      if (!pendingRequest) {
         return [Effect.void, pending] as const;
       }
       const next = new Map(pending);
       next.delete(requestId);
-      return [onFound(deferred), next] as const;
+      return [onFound(pendingRequest), next] as const;
     }).pipe(Effect.flatten);
 
   const removeExtPending = (requestId: string) =>
@@ -224,15 +230,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     });
 
   const completeExtPendingFailure = (requestId: string, error: AcpError.AcpError) =>
-    resolveExtPending(requestId, (deferred) => Deferred.fail(deferred, error));
+    resolveExtPending(requestId, ({ deferred }) => Deferred.fail(deferred, error));
 
   const completeExtPendingSuccess = (requestId: string, value: unknown) =>
-    resolveExtPending(requestId, (deferred) => Deferred.succeed(deferred, value));
+    resolveExtPending(requestId, ({ deferred }) => Deferred.succeed(deferred, value));
 
   const failAllExtPending = (error: AcpError.AcpError) =>
     Ref.getAndSet(extPending, new Map()).pipe(
       Effect.flatMap((pending) =>
-        Effect.forEach([...pending.values()], (deferred) => Deferred.fail(deferred, error), {
+        Effect.forEach([...pending.values()], ({ deferred }) => Deferred.fail(deferred, error), {
           discard: true,
         }),
       ),
@@ -253,7 +259,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       _tag: "ClientProtocolError",
       error: new RpcClientError.RpcClientError({
         reason: new RpcClientError.RpcClientDefect({
-          message: error.message,
+          message: "ACP protocol terminated.",
           cause: error,
         }),
       }),
@@ -312,7 +318,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
     return options.onExtRequest(message.tag, message.payload).pipe(
       Effect.matchEffect({
-        onFailure: (error) => respondWithError(message.id, normalizeToRequestError(error)),
+        onFailure: (error) =>
+          respondWithError(
+            message.id,
+            AcpError.AcpRequestError.fromExtensionHandlerError(error, message.tag),
+          ),
         onSuccess: (value) => respondWithSuccess(message.id, value),
       }),
     );
@@ -415,12 +425,12 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
                 params,
               }) satisfies AcpIncomingNotification,
           ),
-          Effect.mapError(
-            (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: `Invalid ${CLIENT_METHODS.session_update} notification payload`,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            AcpError.AcpProtocolParseError.fromSchemaError(
+              "decode-notification-payload",
+              CLIENT_METHODS.session_update,
+              cause,
+            ),
           ),
           Effect.flatMap(dispatchNotification),
         );
@@ -435,12 +445,12 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
                 params,
               }) satisfies AcpIncomingNotification,
           ),
-          Effect.mapError(
-            (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: `Invalid ${CLIENT_METHODS.session_elicitation_complete} notification payload`,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            AcpError.AcpProtocolParseError.fromSchemaError(
+              "decode-notification-payload",
+              CLIENT_METHODS.session_elicitation_complete,
+              cause,
+            ),
           ),
           Effect.flatMap(dispatchNotification),
         );
@@ -454,7 +464,26 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
 
     if (!options.serverRequestMethods.has(message.tag)) {
       return handleExtRequest(message).pipe(
-        Effect.catch(() => respondWithError(message.id, AcpError.AcpRequestError.internalError())),
+        Effect.catchTags({
+          AcpProtocolParseError: (error) =>
+            Effect.logWarning(error).pipe(
+              Effect.annotateLogs({
+                method: message.tag,
+                requestId: message.id,
+                operation: error.operation,
+              }),
+              Effect.andThen(
+                respondWithError(
+                  message.id,
+                  AcpError.AcpRequestError.fromExtensionResponseEncodingError(
+                    message.tag,
+                    message.id,
+                    error,
+                  ),
+                ),
+              ),
+            ),
+        }),
         Effect.asVoid,
       );
     }
@@ -472,6 +501,10 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         if (!pending.has(normalizedMessage.requestId)) {
           return Queue.offer(clientQueue, normalizedMessage).pipe(Effect.asVoid);
         }
+        const pendingRequest = pending.get(normalizedMessage.requestId);
+        if (!pendingRequest) {
+          return Queue.offer(clientQueue, normalizedMessage).pipe(Effect.asVoid);
+        }
         if (normalizedMessage.exit._tag === "Success") {
           return completeExtPendingSuccess(
             normalizedMessage.requestId,
@@ -482,12 +515,20 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         if (failure) {
           return completeExtPendingFailure(
             normalizedMessage.requestId,
-            AcpError.AcpRequestError.fromProtocolError(failure),
+            AcpError.AcpRequestError.fromProtocolError(failure, {
+              method: pendingRequest.method,
+              requestId: normalizedMessage.requestId,
+              cause: normalizedMessage.exit.cause,
+            }),
           );
         }
         return completeExtPendingFailure(
           normalizedMessage.requestId,
-          AcpError.AcpRequestError.internalError("Extension request failed"),
+          AcpError.AcpRequestError.fromExtensionResponseFailure(
+            pendingRequest.method,
+            normalizedMessage.requestId,
+            normalizedMessage.exit.cause,
+          ),
         );
       }),
     );
@@ -503,16 +544,18 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleExitEncoded(message);
       case "Chunk":
         return Ref.get(extPending).pipe(
-          Effect.flatMap((pending) =>
-            pending.has(message.requestId)
+          Effect.flatMap((pending) => {
+            const pendingRequest = pending.get(message.requestId);
+            return pendingRequest
               ? completeExtPendingFailure(
                   message.requestId,
-                  AcpError.AcpRequestError.internalError(
-                    "Streaming extension responses are not supported",
+                  AcpError.AcpRequestError.unsupportedStreamingResponse(
+                    pendingRequest.method,
+                    message.requestId,
                   ),
                 )
-              : Queue.offer(clientQueue, message).pipe(Effect.asVoid),
-          ),
+              : Queue.offer(clientQueue, message).pipe(Effect.asVoid);
+          }),
         );
       case "Defect":
       case "ClientProtocolError":
@@ -545,7 +588,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       },
       catch: (cause) =>
         new AcpError.AcpProtocolParseError({
-          detail: "Failed to decode ACP wire message",
+          operation: "decode-wire-message",
           cause,
         }),
     });
@@ -567,7 +610,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       },
       catch: (cause) =>
         new AcpError.AcpProtocolParseError({
-          detail: "Failed to decode trailing ACP wire message",
+          operation: "decode-wire-message",
           cause,
         }),
     });
@@ -599,8 +642,14 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
             direction: "incoming",
             stage: "decode_failed",
             payload: {
-              detail: error.detail,
-              cause: error.cause,
+              operation: error.operation,
+              ...(error.method === undefined ? {} : { method: error.method }),
+              ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+              ...(error.issueCount === undefined ? {} : { issueCount: error.issueCount }),
+              ...(error.issueKinds === undefined ? {} : { issueKinds: error.issueKinds }),
+              ...(error.maximumPathDepth === undefined
+                ? {}
+                : { maximumPathDepth: error.maximumPathDepth }),
             },
           }),
         ),
@@ -612,7 +661,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         const normalized: AcpError.AcpError = isAcpError(error)
           ? error
           : new AcpError.AcpTransportError({
-              detail: error instanceof Error ? error.message : String(error),
+              operation: "read-input-stream",
               cause: error,
             });
         return handleTermination(() => Effect.succeed(normalized));
@@ -625,12 +674,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
             handleTermination(
               () =>
                 options.terminationError ??
-                Effect.succeed(
-                  new AcpError.AcpTransportError({
-                    detail: "ACP input stream ended",
-                    cause: new Error("ACP input stream ended"),
-                  }),
-                ),
+                Effect.succeed(new AcpError.AcpInputStreamEndedError({})),
             ),
           ),
         ),
@@ -646,7 +690,18 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         Stream.runForEach((message) => f(message)),
         Effect.forever,
       ),
-    send: (_clientId, request) => offerOutgoing(request).pipe(Effect.mapError(toRpcClientError)),
+    send: (_clientId, request) =>
+      offerOutgoing(request).pipe(
+        Effect.mapError(
+          (error) =>
+            new RpcClientError.RpcClientError({
+              reason: new RpcClientError.RpcClientDefect({
+                message: "Failed to send ACP protocol message.",
+                cause: error,
+              }),
+            }),
+        ),
+      ),
     supportsAck: true,
     supportsTransferables: false,
   });
@@ -687,18 +742,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       (current) => [current, current + 1n] as const,
     );
     const deferred = yield* Deferred.make<unknown, AcpError.AcpError>();
-    yield* Ref.update(extPending, (pending) => new Map(pending).set(String(requestId), deferred));
+    yield* Ref.update(extPending, (pending) =>
+      new Map(pending).set(String(requestId), { deferred, method }),
+    );
     yield* offerOutgoing({
       _tag: "Request",
       id: String(requestId),
       tag: method,
       payload,
       headers: [],
-    }).pipe(
-      Effect.catch((error) =>
-        removeExtPending(String(requestId)).pipe(Effect.andThen(Effect.fail(error))),
-      ),
-    );
+    }).pipe(Effect.tapError(() => removeExtPending(String(requestId))));
     return yield* Deferred.await(deferred).pipe(
       Effect.onInterrupt(() => removeExtPending(String(requestId))),
     );
@@ -769,19 +822,6 @@ function findProtocolErrorFailure(cause: ProtocolFailureCause): ProtocolError | 
     }
   }
   return undefined;
-}
-
-function normalizeToRequestError(error: AcpError.AcpError): AcpError.AcpRequestError {
-  return isAcpRequestError(error) ? error : AcpError.AcpRequestError.internalError(error.message);
-}
-
-function toRpcClientError(error: AcpError.AcpError): RpcClientError.RpcClientError {
-  return new RpcClientError.RpcClientError({
-    reason: new RpcClientError.RpcClientDefect({
-      message: error.message,
-      cause: error,
-    }),
-  });
 }
 
 interface WireCompatibilityDecoder {

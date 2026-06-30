@@ -6,9 +6,9 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { expandHomePath } from "../pathExpansion.ts";
 import {
@@ -23,8 +23,8 @@ const MAX_SKILL_FILES = 300;
 const MAX_SKILL_FILE_BYTES = 512 * 1024;
 const SKILL_TOKEN_REGEX = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
 const PLUGIN_MANIFEST_RELATIVE_PATHS = [
-  path.join(".codex-plugin", "plugin.json"),
-  path.join(".claude-plugin", "plugin.json"),
+  NodePath.join(".codex-plugin", "plugin.json"),
+  NodePath.join(".claude-plugin", "plugin.json"),
 ] as const;
 
 type CodexSkillScope = "project" | "user" | "system" | "admin";
@@ -100,12 +100,12 @@ function extractFrontmatter(contents: string): string | undefined {
 }
 
 function defaultSkillName(skillPath: string): string {
-  return path.basename(path.dirname(skillPath)).trim() || "skill";
+  return NodePath.basename(NodePath.dirname(skillPath)).trim() || "skill";
 }
 
 async function pathExists(candidate: string): Promise<boolean> {
   try {
-    await fs.stat(candidate);
+    await NodeFSP.stat(candidate);
     return true;
   } catch {
     return false;
@@ -116,7 +116,7 @@ function dedupeRoots(roots: ReadonlyArray<CodexSkillRoot>): ReadonlyArray<CodexS
   const seen = new Set<string>();
   const deduped: CodexSkillRoot[] = [];
   for (const root of roots) {
-    const resolved = path.resolve(root.path);
+    const resolved = NodePath.resolve(root.path);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
     deduped.push({ ...root, path: resolved });
@@ -128,7 +128,7 @@ export function buildCodexSkillRoots(
   options: CodexSkillDiscoveryOptions = {},
 ): ReadonlyArray<CodexSkillRoot> {
   const env = options.environment ?? process.env;
-  const homeDir = options.homeDir ?? env.HOME ?? os.homedir();
+  const homeDir = options.homeDir ?? env.HOME ?? NodeOS.homedir();
   const platform = options.platform;
   const codexHome = expandHomePath(
     options.codexHomePath?.trim() || env.CODEX_HOME?.trim() || DEFAULT_CODEX_HOME,
@@ -138,19 +138,22 @@ export function buildCodexSkillRoots(
 
   if (cwd) {
     roots.push(
-      { path: path.join(cwd, ".codex", "skills"), scope: "project" },
-      { path: path.join(cwd, ".agents", "skills"), scope: "project" },
+      { path: NodePath.join(cwd, ".codex", "skills"), scope: "project" },
+      { path: NodePath.join(cwd, ".agents", "skills"), scope: "project" },
     );
   }
 
   roots.push(
-    { path: path.join(codexHome, "skills"), scope: "user" },
-    { path: path.join(codexHome, "plugins", "cache"), scope: "user" },
-    { path: path.join(codexHome, "skills", ".system"), scope: "system" },
+    { path: NodePath.join(codexHome, "skills"), scope: "user" },
+    { path: NodePath.join(codexHome, "plugins", "cache"), scope: "user" },
+    { path: NodePath.join(codexHome, "skills", ".system"), scope: "system" },
   );
 
   if (homeDir) {
-    roots.push({ path: path.join(expandHomePath(homeDir), ".agents", "skills"), scope: "user" });
+    roots.push({
+      path: NodePath.join(expandHomePath(homeDir), ".agents", "skills"),
+      scope: "user",
+    });
   }
 
   if (platform !== "win32") {
@@ -174,16 +177,16 @@ async function discoverSkillFilesUnderRoot(
     const { dir, depth } = queue.shift()!;
     let realDir = dir;
     try {
-      realDir = await fs.realpath(dir);
+      realDir = await NodeFSP.realpath(dir);
     } catch {
-      realDir = path.resolve(dir);
+      realDir = NodePath.resolve(dir);
     }
     if (visited.has(realDir)) continue;
     visited.add(realDir);
 
     let entries: Array<import("node:fs").Dirent>;
     try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
+      entries = await NodeFSP.readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -191,7 +194,7 @@ async function discoverSkillFilesUnderRoot(
     for (const entry of entries) {
       if (found.length >= maxFiles) break;
       if (entry.name.startsWith(".")) continue;
-      const entryPath = path.join(dir, entry.name);
+      const entryPath = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (depth < MAX_SCAN_DEPTH) {
           queue.push({ dir: entryPath, depth: depth + 1 });
@@ -209,23 +212,23 @@ async function discoverSkillFilesUnderRoot(
 
 async function readPluginManifestName(pluginRoot: string): Promise<string | undefined> {
   for (const relativeManifestPath of PLUGIN_MANIFEST_RELATIVE_PATHS) {
-    const manifestPath = path.join(pluginRoot, relativeManifestPath);
+    const manifestPath = NodePath.join(pluginRoot, relativeManifestPath);
     let stat: import("node:fs").Stats;
     try {
-      stat = await fs.stat(manifestPath);
+      stat = await NodeFSP.stat(manifestPath);
     } catch {
       continue;
     }
     if (!stat.isFile()) continue;
 
     try {
-      const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
+      const parsed = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8")) as unknown;
       const rawName =
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? (parsed as { readonly name?: unknown }).name
           : undefined;
       const name = typeof rawName === "string" ? normalizeWhitespace(rawName) : undefined;
-      return name ?? normalizeWhitespace(path.basename(pluginRoot));
+      return name ?? normalizeWhitespace(NodePath.basename(pluginRoot));
     } catch {
       return undefined;
     }
@@ -235,11 +238,11 @@ async function readPluginManifestName(pluginRoot: string): Promise<string | unde
 }
 
 async function pluginNamespaceForSkillPath(skillPath: string): Promise<string | undefined> {
-  for (let current = path.dirname(skillPath); ; current = path.dirname(current)) {
+  for (let current = NodePath.dirname(skillPath); ; current = NodePath.dirname(current)) {
     const namespace = await readPluginManifestName(current);
     if (namespace) return namespace;
 
-    const parent = path.dirname(current);
+    const parent = NodePath.dirname(current);
     if (parent === current) return undefined;
   }
 }
@@ -250,7 +253,7 @@ async function parseSkillFile(
 ): Promise<ServerProviderSkill | null> {
   let stat: import("node:fs").Stats;
   try {
-    stat = await fs.stat(skillPath);
+    stat = await NodeFSP.stat(skillPath);
   } catch {
     return null;
   }
@@ -258,7 +261,7 @@ async function parseSkillFile(
 
   let contents: string;
   try {
-    contents = await fs.readFile(skillPath, "utf8");
+    contents = await NodeFSP.readFile(skillPath, "utf8");
   } catch {
     return null;
   }
@@ -273,7 +276,7 @@ async function parseSkillFile(
 
   return {
     name,
-    path: path.resolve(skillPath),
+    path: NodePath.resolve(skillPath),
     scope,
     enabled: true,
     ...(description ? { description } : {}),
@@ -311,7 +314,7 @@ async function discoverCodexSkillsUnsafe(
   const seenPaths = new Set<string>();
   const skills: ServerProviderSkill[] = [];
   for (const skillFile of skillFiles) {
-    const resolvedPath = path.resolve(skillFile.path);
+    const resolvedPath = NodePath.resolve(skillFile.path);
     if (seenPaths.has(resolvedPath)) continue;
     seenPaths.add(resolvedPath);
     const skill = await parseSkillFile(resolvedPath, skillFile.scope);
@@ -371,9 +374,9 @@ async function buildCodexSkillFragmentsUnsafe(
     const skill = enabledSkillsByName.get(mention);
     if (!skill) continue;
     try {
-      const stat = await fs.stat(skill.path);
+      const stat = await NodeFSP.stat(skill.path);
       if (!stat.isFile() || stat.size > MAX_SKILL_FILE_BYTES) continue;
-      const contents = await fs.readFile(skill.path, "utf8");
+      const contents = await NodeFSP.readFile(skill.path, "utf8");
       fragments.push(renderSkillFragment(skill, contents));
     } catch {
       continue;

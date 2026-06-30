@@ -7,6 +7,7 @@ import type * as EffectAcpErrors from "effect-acp/errors";
 
 import {
   AcpSessionRuntime,
+  layer as acpSessionRuntimeLayer,
   type AcpSessionRuntimeOptions,
   type AcpSessionRuntimeShape,
   type AcpSpawnInput,
@@ -64,7 +65,7 @@ export const makeKiroAcpRuntime = (
 ): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
     const acpContext = yield* Layer.build(
-      AcpSessionRuntime.layer({
+      acpSessionRuntimeLayer({
         ...input,
         spawn: buildKiroAcpSpawnInput(
           input.kiroSettings,

@@ -67,14 +67,14 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   setDockIcon: () => Effect.void,
   appendCommandLineSwitch: () => Effect.void,
   on: () => Effect.void,
-} satisfies ElectronApp.ElectronAppShape);
+} satisfies ElectronApp.ElectronApp["Service"]);
 
 const electronDialogLayer = Layer.succeed(ElectronDialog.ElectronDialog, {
   pickFolder: () => Effect.succeed(Option.none()),
   confirm: () => Effect.succeed(false),
   showMessageBox: () => Effect.succeed({ response: 0, checkboxChecked: false }),
   showErrorBox: () => Effect.void,
-} satisfies ElectronDialog.ElectronDialogShape);
+} satisfies ElectronDialog.ElectronDialog["Service"]);
 
 const desktopUpdatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
   getState: Effect.die("unexpected getState"),
@@ -85,7 +85,7 @@ const desktopUpdatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
   check: () => Effect.die("unexpected check"),
   download: Effect.die("unexpected download"),
   install: Effect.die("unexpected install"),
-} satisfies DesktopUpdates.DesktopUpdatesShape);
+} satisfies DesktopUpdates.DesktopUpdates["Service"]);
 
 const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -94,10 +94,12 @@ const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
     revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
     activate: Effect.void,
     createMainIfBackendReady: Effect.void,
-    handleBackendReady: Effect.void,
+    showConnectingSplash: Effect.void,
+    handleBackendReady: () => Effect.void,
+    handleBackendNotReady: Effect.void,
     dispatchMenuAction: (action) => Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
     syncAppearance: Effect.void,
-  } satisfies DesktopWindow.DesktopWindowShape);
+  } satisfies DesktopWindow.DesktopWindow["Service"]);
 
 const makeElectronMenuLayer = (
   applicationMenuTemplate: Deferred.Deferred<readonly Electron.MenuItemConstructorOptions[]>,
@@ -107,7 +109,7 @@ const makeElectronMenuLayer = (
       Deferred.succeed(applicationMenuTemplate, template).pipe(Effect.asVoid),
     popupTemplate: () => Effect.void,
     showContextMenu: () => Effect.succeed(Option.none()),
-  } satisfies ElectronMenu.ElectronMenuShape);
+  } satisfies ElectronMenu.ElectronMenu["Service"]);
 
 describe("DesktopApplicationMenu", () => {
   it.effect("installs the native menu and routes Settings through DesktopWindow", () =>
@@ -166,11 +168,13 @@ describe("DesktopApplicationMenu", () => {
         revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
         activate: Effect.void,
         createMainIfBackendReady: Effect.void,
-        handleBackendReady: Effect.void,
+        showConnectingSplash: Effect.void,
+        handleBackendReady: () => Effect.void,
+        handleBackendNotReady: Effect.void,
         dispatchMenuAction: (action) =>
           Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
         syncAppearance: Effect.void,
-      } satisfies DesktopWindow.DesktopWindowShape);
+      } satisfies DesktopWindow.DesktopWindow["Service"]);
       const dialogLayer = Layer.succeed(ElectronDialog.ElectronDialog, {
         pickFolder: () => Effect.succeed(Option.none()),
         confirm: () => Effect.succeed(false),
@@ -179,7 +183,7 @@ describe("DesktopApplicationMenu", () => {
             Effect.as({ response: 0, checkboxChecked: false }),
           ),
         showErrorBox: () => Effect.void,
-      } satisfies ElectronDialog.ElectronDialogShape);
+      } satisfies ElectronDialog.ElectronDialog["Service"]);
       const updatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
         getState: Effect.die("unexpected getState"),
         emitState: Effect.void,
@@ -208,7 +212,7 @@ describe("DesktopApplicationMenu", () => {
           }),
         download: Effect.die("unexpected download"),
         install: Effect.die("unexpected install"),
-      } satisfies DesktopUpdates.DesktopUpdatesShape);
+      } satisfies DesktopUpdates.DesktopUpdates["Service"]);
 
       yield* Effect.gen(function* () {
         const menu = yield* DesktopApplicationMenu.DesktopApplicationMenu;

@@ -2,9 +2,9 @@
 // oxlint-disable t3code/no-manual-effect-runtime-in-tests -- pre-existing test debt (uses Effect.runPromise); tests pass, refactor to it.effect is a follow-up
 import { describe, expect, it } from "vite-plus/test";
 import * as Effect from "effect/Effect";
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { ThreadId } from "@t3tools/contracts";
 import {
@@ -16,14 +16,14 @@ import {
 } from "./CodexSkillBridge.ts";
 
 async function makeTempDir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "t3-codex-skills-"));
+  return NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-codex-skills-"));
 }
 
 async function writeSkill(root: string, dirName: string, contents: string) {
-  const skillDir = path.join(root, dirName);
-  await fs.mkdir(skillDir, { recursive: true });
-  const skillPath = path.join(skillDir, "SKILL.md");
-  await fs.writeFile(skillPath, contents, "utf8");
+  const skillDir = NodePath.join(root, dirName);
+  await NodeFSP.mkdir(skillDir, { recursive: true });
+  const skillPath = NodePath.join(skillDir, "SKILL.md");
+  await NodeFSP.writeFile(skillPath, contents, "utf8");
   return skillPath;
 }
 
@@ -42,11 +42,11 @@ describe("CodexSkillBridge", () => {
       }).map((root) => ({ path: root.path, scope: root.scope })),
     ).toEqual(
       expect.arrayContaining([
-        { path: path.join(cwd, ".codex", "skills"), scope: "project" },
-        { path: path.join(cwd, ".agents", "skills"), scope: "project" },
-        { path: path.join(codexHome, "skills"), scope: "user" },
-        { path: path.join(codexHome, "skills", ".system"), scope: "system" },
-        { path: path.join(homeDir, ".agents", "skills"), scope: "user" },
+        { path: NodePath.join(cwd, ".codex", "skills"), scope: "project" },
+        { path: NodePath.join(cwd, ".agents", "skills"), scope: "project" },
+        { path: NodePath.join(codexHome, "skills"), scope: "user" },
+        { path: NodePath.join(codexHome, "skills", ".system"), scope: "system" },
+        { path: NodePath.join(homeDir, ".agents", "skills"), scope: "user" },
       ]),
     );
   });
@@ -55,8 +55,8 @@ describe("CodexSkillBridge", () => {
     const cwd = await makeTempDir();
     const codexHome = await makeTempDir();
     const homeDir = await makeTempDir();
-    const projectRoot = path.join(cwd, ".codex", "skills");
-    const userRoot = path.join(homeDir, ".agents", "skills");
+    const projectRoot = NodePath.join(cwd, ".codex", "skills");
+    const userRoot = NodePath.join(homeDir, ".agents", "skills");
     const projectSkillPath = await writeSkill(
       projectRoot,
       "project-plan",
@@ -109,7 +109,7 @@ describe("CodexSkillBridge", () => {
     const codexHome = await makeTempDir();
     const homeDir = await makeTempDir();
     await writeSkill(
-      path.join(codexHome, "skills", ".system"),
+      NodePath.join(codexHome, "skills", ".system"),
       "imagegen",
       ["---", "name: imagegen", "description: Generate images", "---", "Generate."].join("\n"),
     );
@@ -145,15 +145,15 @@ describe("CodexSkillBridge", () => {
     const cwd = await makeTempDir();
     const codexHome = await makeTempDir();
     const homeDir = await makeTempDir();
-    const pluginRoot = path.join(codexHome, "plugins", "cache", "openai-curated", "github");
-    await fs.mkdir(path.join(pluginRoot, ".codex-plugin"), { recursive: true });
-    await fs.writeFile(
-      path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+    const pluginRoot = NodePath.join(codexHome, "plugins", "cache", "openai-curated", "github");
+    await NodeFSP.mkdir(NodePath.join(pluginRoot, ".codex-plugin"), { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(pluginRoot, ".codex-plugin", "plugin.json"),
       JSON.stringify({ name: "github" }),
       "utf8",
     );
     const skillPath = await writeSkill(
-      path.join(pluginRoot, "skills"),
+      NodePath.join(pluginRoot, "skills"),
       "gh-fix-ci",
       ["---", "name: gh-fix-ci", "description: Fix CI", "---", "Fix checks."].join("\n"),
     );
@@ -190,7 +190,7 @@ describe("CodexSkillBridge", () => {
     const codexHome = await makeTempDir();
     const homeDir = await makeTempDir();
     const skillPath = await writeSkill(
-      path.join(cwd, ".codex", "skills"),
+      NodePath.join(cwd, ".codex", "skills"),
       "graphify",
       ["---", "name: graphify", "description: Build a graph", "---", "Graph the codebase."].join(
         "\n",
@@ -216,7 +216,7 @@ describe("CodexSkillBridge", () => {
     const codexHome = await makeTempDir();
     const homeDir = await makeTempDir();
     await writeSkill(
-      path.join(cwd, ".codex", "skills"),
+      NodePath.join(cwd, ".codex", "skills"),
       "repo-audit",
       ["---", "name: repo-audit", "description: Audit", "---", "Audit deeply."].join("\n"),
     );
