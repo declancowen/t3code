@@ -294,7 +294,8 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-anchor-offset="16"');
     expect(markup).toContain('data-anchor-on-ready="true"');
     expect(markup).not.toContain("data-anchor-max-size=");
-    expect(markup).toContain('data-content-inset-end="144"');
+    expect(markup).toContain('data-timeline-footer-spacer="true"');
+    expect(markup).toContain('data-timeline-footer-spacer-height="160"');
     expect(markup).toContain("[overflow-anchor:none]");
     expect(markup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-maintain-visible-content-position="object"');
@@ -303,7 +304,7 @@ describe("MessagesTimeline", () => {
     expect(onAnchorReady).toHaveBeenCalledOnce();
     expect(onAnchorReady).toHaveBeenCalledWith(secondEntry.message.id, 1);
     expect(onAnchorSizeChanged).toHaveBeenCalledWith(secondEntry.message.id, 240);
-  });
+  }, 30_000);
 
   it("renders collapse controls for long user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");

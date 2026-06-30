@@ -349,6 +349,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => (
       <div
         aria-hidden
+        data-timeline-footer-spacer="true"
+        data-timeline-footer-spacer-height={Math.max(16, contentInsetEndAdjustment + 16)}
         className="shrink-0"
         style={{ height: Math.max(16, contentInsetEndAdjustment + 16) }}
       />
