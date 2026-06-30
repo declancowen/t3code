@@ -765,6 +765,17 @@ export function resolveMacPasskeySigningConfiguration(
   };
 }
 
+function hasMacPasskeySigningConfiguration(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return Boolean(
+    env.T3CODE_APPLE_TEAM_ID?.trim() ||
+    env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ||
+    env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim() ||
+    env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim(),
+  );
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -1743,10 +1754,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  const repoEnv = loadRepoEnv({ repoRoot });
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && hasMacPasskeySigningConfiguration(repoEnv)
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
