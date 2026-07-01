@@ -19,12 +19,15 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -98,6 +101,7 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
     archChoices: ["x64", "arm64"],
   },
 };
+const MACOS_SRGB_PROFILE_PATH = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
 
 interface BuildCliInput {
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
@@ -238,6 +242,17 @@ export class DesktopIconSourceMissingError extends Schema.TaggedErrorClass<Deskt
 ) {
   override get message(): string {
     return `Desktop ${desktopIconPlatformNames[this.platform]} icon source is missing at ${this.sourcePath}`;
+  }
+}
+
+export class MacIconGenerationFailedError extends Schema.TaggedErrorClass<MacIconGenerationFailedError>()(
+  "MacIconGenerationFailedError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to regenerate macOS icon.icns and no prebuilt icon was staged.";
   }
 }
 
@@ -750,6 +765,17 @@ export function resolveMacPasskeySigningConfiguration(
   };
 }
 
+function hasMacPasskeySigningConfiguration(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return Boolean(
+    env.T3CODE_APPLE_TEAM_ID?.trim() ||
+    env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ||
+    env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim() ||
+    env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim(),
+  );
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -1091,7 +1117,11 @@ function generateMacIconSet(
   tmpRoot: string,
   path: Path.Path,
   verbose: boolean,
-) {
+): Effect.Effect<
+  void,
+  BuildCommandFailedError | PlatformError.PlatformError,
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const iconsetDir = path.join(tmpRoot, "icon.iconset");
@@ -1102,7 +1132,7 @@ function generateMacIconSet(
       yield* runCommand(
         ChildProcess.make(
           {},
-        )`sips -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
+        )`sips -m ${MACOS_SRGB_PROFILE_PATH} -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
         { label: `sips icon ${size}x${size}`, verbose },
       );
 
@@ -1110,7 +1140,7 @@ function generateMacIconSet(
       yield* runCommand(
         ChildProcess.make(
           {},
-        )`sips -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
+        )`sips -m ${MACOS_SRGB_PROFILE_PATH} -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
         { label: `sips icon ${size}x${size}@2x`, verbose },
       );
     }
@@ -1122,7 +1152,31 @@ function generateMacIconSet(
   });
 }
 
-function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: boolean) {
+type DesktopBuildResourceError =
+  | DesktopIconSourceMissingError
+  | BuildCommandFailedError
+  | MacIconGenerationFailedError
+  | LinuxIconResizeError
+  | PlatformError.PlatformError;
+
+type DesktopBuildResourceServices =
+  | FileSystem.FileSystem
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Scope.Scope;
+
+function stageMacIcons(
+  stageResourcesDir: string,
+  sourcePng: string,
+  verbose: boolean,
+): Effect.Effect<
+  void,
+  | DesktopIconSourceMissingError
+  | BuildCommandFailedError
+  | MacIconGenerationFailedError
+  | PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1140,16 +1194,44 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
     const iconPngPath = path.join(stageResourcesDir, "icon.png");
     const iconIcnsPath = path.join(stageResourcesDir, "icon.icns");
 
-    yield* runCommand(ChildProcess.make({})`sips -z 512 512 ${sourcePng} --out ${iconPngPath}`, {
-      label: "sips mac icon",
-      verbose,
-    });
+    yield* runCommand(
+      ChildProcess.make(
+        {},
+      )`sips -m ${MACOS_SRGB_PROFILE_PATH} -z 512 512 ${sourcePng} --out ${iconPngPath}`,
+      { label: "sips mac icon", verbose },
+    );
 
-    yield* generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose);
+    const iconSetExit = yield* Effect.exit(
+      generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose),
+    );
+    if (Exit.isFailure(iconSetExit)) {
+      if (!(yield* fs.exists(iconIcnsPath))) {
+        return yield* new MacIconGenerationFailedError({
+          cause: iconSetExit.cause,
+        });
+      }
+      yield* Effect.logWarning(
+        "[desktop-artifact] Failed to regenerate macOS icon.icns; using staged prebuilt icon.",
+        {
+          cause: String(iconSetExit.cause),
+        },
+      );
+    }
   });
 }
 
-function stageLinuxIcons(stageResourcesDir: string, sourcePng: string, verbose: boolean) {
+function stageLinuxIcons(
+  stageResourcesDir: string,
+  sourcePng: string,
+  verbose: boolean,
+): Effect.Effect<
+  void,
+  | DesktopIconSourceMissingError
+  | BuildCommandFailedError
+  | LinuxIconResizeError
+  | PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1181,7 +1263,11 @@ export function stageLinuxIconSize(
   targetPng: string,
   iconSize: number,
   verbose: boolean,
-) {
+): Effect.Effect<
+  void,
+  LinuxIconResizeError,
+  ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> {
   const resize = (command: string) =>
     runCommand(
       ChildProcess.make(command, [sourcePng, "-resize", `${iconSize}x${iconSize}`, targetPng]),
@@ -1210,7 +1296,14 @@ export function stageLinuxIconSize(
   );
 }
 
-function stageWindowsIcons(stageResourcesDir: string, sourceIco: string) {
+function stageWindowsIcons(
+  stageResourcesDir: string,
+  sourceIco: string,
+): Effect.Effect<
+  void,
+  DesktopIconSourceMissingError | PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1336,6 +1429,20 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+export function resolveDesktopAsarUnpack(platform: typeof BuildPlatform.Type): string[] {
+  const unpack = [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**"];
+
+  if (platform === "win") {
+    // The WSL backend launches plain `wsl.exe -- node`, which cannot read
+    // dependencies from app.asar. Keep the full dependency tree unpacked only
+    // for Windows so macOS/Linux packages do not have to copy hundreds of
+    // modules outside the archive during release signing.
+    unpack.push("**/node_modules/**");
+  }
+
+  return unpack;
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -1357,20 +1464,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
-    // The Windows primary backend runs the server bundle through
-    // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
-    // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
-    // cannot read inside an asar archive, so everything it loads must be on the
-    // real filesystem. The server bundle externalizes its runtime dependencies
-    // (effect, @effect/*, node-pty, ...) to node_modules rather than inlining
-    // them, so unpacking just the bundle + node-pty isn't enough — the Linux Node
-    // fails with ERR_MODULE_NOT_FOUND (e.g. "Cannot find package 'effect'") before
-    // it even reaches node-pty. Unpack the server bundle AND the whole
-    // node_modules tree so every import resolves (this also covers the fff native
-    // binaries in DESKTOP_ASAR_UNPACK). The Windows primary keeps reading the same
-    // files through the asar (transparently redirected to the unpacked copy), so
-    // there's no duplication.
-    asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**", "**/node_modules/**"],
+    asarUnpack: resolveDesktopAsarUnpack(platform),
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
@@ -1443,7 +1537,7 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   stageResourcesDir: string,
   iconAssets: DesktopBuildIconAssets,
   verbose: boolean,
-) {
+): Effect.fn.Return<void, DesktopBuildResourceError, DesktopBuildResourceServices> {
   if (platform === "mac") {
     yield* stageMacIcons(stageResourcesDir, iconAssets.macIconPng, verbose);
     return;
@@ -1661,10 +1755,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  const repoEnv = loadRepoEnv({ repoRoot });
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && hasMacPasskeySigningConfiguration(repoEnv)
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;

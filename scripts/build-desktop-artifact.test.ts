@@ -29,6 +29,7 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
+  resolveDesktopAsarUnpack,
   resolveDesktopUpdateChannel,
   resolveGitHubPublishConfig,
   resolveMockUpdateServerPort,
@@ -236,6 +237,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it("unpacks the fff shared library for filesystem and FFI access", () => {
     assert.deepStrictEqual(DESKTOP_ASAR_UNPACK, ["node_modules/@ff-labs/fff-bin-*/**/*"]);
+  });
+
+  it("keeps the full node_modules unpack scoped to the Windows WSL backend", () => {
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("mac"), [
+      "node_modules/@ff-labs/fff-bin-*/**/*",
+      "apps/server/dist/**",
+    ]);
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("linux"), [
+      "node_modules/@ff-labs/fff-bin-*/**/*",
+      "apps/server/dist/**",
+    ]);
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("win"), [
+      "node_modules/@ff-labs/fff-bin-*/**/*",
+      "apps/server/dist/**",
+      "**/node_modules/**",
+    ]);
   });
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {
