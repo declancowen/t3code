@@ -67,8 +67,30 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  readonly authMethodId?: string;
+  readonly setModelStrategy?: "config-option" | "session-set-model";
+  /**
+   * How to handle `session/set_model` request errors for agents using the
+   * `session-set-model` strategy.
+   *
+   * Keep the default strict mode for agents where a rejected model means the
+   * request is invalid. Some ACP agents, notably kiro-cli, can reject stale or
+   * unavailable model ids while still having a valid current/default model; for
+   * those, continuing keeps the session usable.
+   */
+  readonly setModelFailureMode?: "strict" | "continue-with-current";
+  /**
+   * How to apply `setMode`:
+   *  - `"config-option"` (default): set the `"mode"` session config option via
+   *    `session/set_config_option` (Cursor and other config-option agents).
+   *  - `"session-set-mode"`: issue a real `session/set_mode` request. Required
+   *    for agents like kiro-cli that implement `session/set_mode` but do NOT
+   *    implement `session/set_config_option`.
+   */
+  readonly setModeStrategy?: "config-option" | "session-set-mode";
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly requestTimeouts?: Readonly<Record<string, Duration.Input>>;
+  readonly wireCompatibility?: EffectAcpProtocol.AcpWireCompatibilityOptions;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -245,6 +267,8 @@ export class AcpSessionRuntime extends Context.Service<
   }
 >()("t3/provider/acp/AcpSessionRuntime") {}
 
+export type AcpSessionRuntimeShape = AcpSessionRuntime["Service"];
+
 interface AcpStartedState extends AcpSessionRuntimeStartResult {}
 
 type AcpStartState =
@@ -281,6 +305,13 @@ export const make = (
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
+    // Tracks the model id most recently handled via `session/set_model` so we can
+    // skip redundant round-trips when the requested model is unchanged. In
+    // `continue-with-current` mode, a recoverable failure is considered handled
+    // so the runtime does not retry the same stale model every turn. Only the
+    // `session-set-model` strategy uses this; the `config-option` strategy already
+    // de-dupes via `setConfigOption`'s currentValue guard.
+    const lastHandledSessionModelRef = yield* Ref.make<string | undefined>(undefined);
     const promptSerializationSemaphore = yield* Semaphore.make(1);
     const activePromptFiberRef = yield* Ref.make<
       Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
@@ -290,14 +321,33 @@ export const make = (
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
 
+    const timeoutForRequest = (method: string) =>
+      options.requestTimeouts?.[method] ?? options.requestTimeouts?.["*"];
+
+    const timeoutFailure = (method: string, timeout: Duration.Input) =>
+      new EffectAcpErrors.AcpTransportError({
+        detail: `ACP request '${method}' timed out after ${formatDurationInput(timeout)}.`,
+        cause: { method, timeout },
+      });
+
     const runLoggedRequest = <A>(
       method: string,
       payload: unknown,
       effect: Effect.Effect<A, EffectAcpErrors.AcpError>,
-    ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
-      logRequest({ method, payload, status: "started" }).pipe(
+    ): Effect.Effect<A, EffectAcpErrors.AcpError> => {
+      const timeout = timeoutForRequest(method);
+      const requestEffect =
+        timeout === undefined
+          ? effect
+          : effect.pipe(
+              Effect.timeoutOrElse({
+                duration: timeout,
+                orElse: () => Effect.fail(timeoutFailure(method, timeout)),
+              }),
+            );
+      return logRequest({ method, payload, status: "started" }).pipe(
         Effect.flatMap(() =>
-          effect.pipe(
+          requestEffect.pipe(
             Effect.tap((result) =>
               logRequest({
                 method,
@@ -317,6 +367,7 @@ export const make = (
           ),
         ),
       );
+    };
 
     const spawnCommand = yield* resolveSpawnCommand(
       options.spawn.command,
@@ -351,6 +402,7 @@ export const make = (
           ? { logOutgoing: options.protocolLogging.logOutgoing }
           : {}),
         ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
+        ...(options.wireCompatibility ? { wireCompatibility: options.wireCompatibility } : {}),
       }),
     ).pipe(Effect.provideService(Scope.Scope, runtimeScope));
 
@@ -529,15 +581,17 @@ export const make = (
         acp.agent.initialize(initializePayload),
       );
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      if (options.authMethodId !== undefined) {
+        const authenticatePayload = {
+          methodId: options.authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:
@@ -765,6 +819,23 @@ export const make = (
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
             }
+            if (options.setModeStrategy === "session-set-mode") {
+              return getStartedState.pipe(
+                Effect.flatMap((started) => {
+                  const requestPayload = {
+                    sessionId: started.sessionId,
+                    modeId,
+                  } satisfies EffectAcpSchema.SetSessionModeRequest;
+                  return runLoggedRequest(
+                    "session/set_mode",
+                    requestPayload,
+                    acp.raw.request("session/set_mode", requestPayload),
+                  );
+                }),
+                Effect.tap(() => updateCurrentModeId(modeId)),
+                Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
+              );
+            }
             return setConfigOption("mode", modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
@@ -774,7 +845,49 @@ export const make = (
       setConfigOption,
       setModel: (model) =>
         getStartedState.pipe(
-          Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
+          Effect.flatMap((started) => {
+            if (options.setModelStrategy !== "session-set-model") {
+              return setConfigOption(started.modelConfigId ?? "model", model);
+            }
+            return Ref.get(lastHandledSessionModelRef).pipe(
+              Effect.flatMap((lastModel) => {
+                if (lastModel === model) {
+                  return Effect.void;
+                }
+                const requestPayload = {
+                  sessionId: started.sessionId,
+                  modelId: model,
+                } satisfies EffectAcpSchema.SetSessionModelRequest;
+                const setModelRequest = runLoggedRequest(
+                  "session/set_model",
+                  requestPayload,
+                  acp.agent.setSessionModel(requestPayload),
+                );
+                const handledRequest =
+                  options.setModelFailureMode === "continue-with-current"
+                    ? setModelRequest.pipe(
+                        Effect.catch((error) => {
+                          if (!isRecoverableSessionSetModelError(error)) {
+                            return Effect.fail(error);
+                          }
+                          return Effect.logWarning(
+                            "ACP session/set_model failed; continuing with the agent's current model.",
+                            {
+                              method: "session/set_model",
+                              model,
+                              code: error.code,
+                              message: error.message,
+                            },
+                          ).pipe(Effect.as({} satisfies EffectAcpSchema.SetSessionModelResponse));
+                        }),
+                      )
+                    : setModelRequest;
+                return handledRequest.pipe(
+                  Effect.tap(() => Ref.set(lastHandledSessionModelRef, model)),
+                );
+              }),
+            );
+          }),
           Effect.asVoid,
         ),
       setSessionModel: (modelId) =>
@@ -827,6 +940,22 @@ function configOptionCurrentValueMatches(
     return false;
   }
   return currentValue.trim() === String(value).trim();
+}
+
+function isRecoverableSessionSetModelError(
+  error: EffectAcpErrors.AcpError,
+): error is EffectAcpErrors.AcpRequestError {
+  return (
+    error._tag === "AcpRequestError" &&
+    (error.code === -32603 ||
+      error.code === -32602 ||
+      error.code === -32601 ||
+      error.code === -32002)
+  );
+}
+
+function formatDurationInput(input: Duration.Input): string {
+  return typeof input === "number" ? `${input}ms` : String(input);
 }
 
 const handleSessionUpdate = ({

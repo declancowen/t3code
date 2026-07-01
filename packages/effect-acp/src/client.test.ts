@@ -27,9 +27,14 @@ import { makeInMemoryStdio } from "./_internal/stdio.ts";
 
 const InitializeRequest = jsonRpcRequest("initialize", AcpSchema.InitializeRequest);
 const InitializeResponse = jsonRpcResponse(AcpSchema.InitializeResponse);
+const PromptRequest = jsonRpcRequest("session/prompt", AcpSchema.PromptRequest);
+const PromptErrorResponse = Schema.Struct({
+  jsonrpc: Schema.Literal("2.0"),
+  id: Schema.Union([Schema.Number, Schema.String]),
+  error: AcpSchema.Error,
+});
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
-const PromptRequest = jsonRpcRequest("session/prompt", AcpSchema.PromptRequest);
 const PromptResponse = jsonRpcResponse(AcpSchema.PromptResponse);
 const decodePromptRequestLine = Schema.decodeEffect(Schema.fromJsonString(PromptRequest));
 const XAiPromptCompleteNotification = jsonRpcNotification(
@@ -484,6 +489,43 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
 
       yield* Fiber.join(initializeFiber);
       assert.deepEqual(yield* Fiber.join(extFiber), { ok: true });
+      yield* Scope.close(scope, Exit.void);
+    }),
+  );
+
+  it.effect("surfaces JSON-RPC response errors through the ACP request error channel", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const scope = yield* Scope.make();
+      const acp = yield* AcpClient.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+
+      const promptFiber = yield* acp.agent
+        .prompt({
+          sessionId: "session-1",
+          prompt: [{ type: "text", text: "hello" }],
+        })
+        .pipe(Effect.flip, Effect.forkScoped);
+
+      const outbound = yield* Queue.take(output);
+      const promptRequest = yield* decodePromptRequestLine(outbound);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(PromptErrorResponse, {
+          jsonrpc: "2.0",
+          id: promptRequest.id,
+          error: {
+            code: -32603,
+            message: "Internal error",
+            data: "ValidationException: unsupported image format",
+          },
+        }),
+      );
+
+      const error = yield* Fiber.join(promptFiber);
+      assert.instanceOf(error, AcpError.AcpRequestError);
+      assert.equal(error.message, "Internal error");
+      assert.equal(error.data, "ValidationException: unsupported image format");
+
       yield* Scope.close(scope, Exit.void);
     }),
   );

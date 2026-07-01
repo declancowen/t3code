@@ -18,6 +18,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const prettyStartAgentPath = NodePath.join(__dirname, "../../../scripts/acp-pretty-start-agent.ts");
 const mockAgentCommand = "node";
 const mockAgentArgs = [mockAgentPath];
 
@@ -411,6 +412,126 @@ describe("AcpSessionRuntime", () => {
             Effect.sync(() => {
               requestEvents.push(event);
             }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("issues session/set_mode when setModeStrategy is session-set-mode", () => {
+    const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+
+      // Differs from the mock's initial mode ("ask") so a request is issued.
+      yield* runtime.setMode("code");
+
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_mode" && event.status === "started",
+        ),
+      ).toBe(true);
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_mode" && event.status === "succeeded",
+        ),
+      ).toBe(true);
+      // The session-set-mode strategy must NOT fall back to set_config_option.
+      expect(requestEvents.some((event) => event.method === "session/set_config_option")).toBe(
+        false,
+      );
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          setModeStrategy: "session-set-mode",
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("continues with the current model when session/set_model is recoverable", () => {
+    const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+
+      yield* runtime.setModel("unknown-kiro-model");
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_model" && event.status === "failed",
+        ),
+      ).toBe(true);
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/prompt" && event.status === "succeeded",
+        ),
+      ).toBe(true);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          setModelStrategy: "session-set-model",
+          setModelFailureMode: "continue-with-current",
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("decodes bounded pretty-printed JSON-RPC startup messages when opted in", () => {
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("pretty-session-1");
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: [prettyStartAgentPath],
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          wireCompatibility: {
+            tolerateMultilineJson: true,
+            ignoreNonJsonStdout: true,
+          },
         }),
       ),
       Effect.scoped,

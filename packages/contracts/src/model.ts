@@ -130,6 +130,7 @@ export type ModelCapabilities = typeof ModelCapabilities.Type;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
+const KIRO_DRIVER_KIND = ProviderDriverKind.make("kiro");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
@@ -140,6 +141,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CODEX_DRIVER_KIND]: DEFAULT_MODEL,
   [CLAUDE_DRIVER_KIND]: "claude-sonnet-5",
   [CURSOR_DRIVER_KIND]: "auto",
+  [KIRO_DRIVER_KIND]: "auto",
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
 };
@@ -151,6 +153,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CODEX_DRIVER_KIND]: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
+  [KIRO_DRIVER_KIND]: "auto",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -197,6 +200,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5-thinking": "claude-opus-4-5",
     "opus-4.5": "claude-opus-4-5",
   },
+  [KIRO_DRIVER_KIND]: {},
   [OPENCODE_DRIVER_KIND]: {},
 };
 
@@ -206,6 +210,7 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CODEX_DRIVER_KIND]: "Codex",
   [CLAUDE_DRIVER_KIND]: "Claude",
   [CURSOR_DRIVER_KIND]: "Cursor",
+  [KIRO_DRIVER_KIND]: "Kiro",
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
 };

@@ -108,6 +108,12 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "UsageUpdated";
+      readonly usedTokens: number;
+      readonly maxTokens?: number;
+      readonly rawPayload: unknown;
     };
 
 type AcpSessionSetupResponse =
@@ -285,8 +291,58 @@ function extractTextContentFromToolCallContent(
   return chunks.length > 0 ? chunks.join("\n") : undefined;
 }
 
-function normalizeToolKind(kind: unknown): string | undefined {
-  return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
+const ACP_TOOL_KINDS = new Set<EffectAcpSchema.ToolKind>([
+  "read",
+  "edit",
+  "delete",
+  "move",
+  "search",
+  "execute",
+  "think",
+  "fetch",
+  "switch_mode",
+  "other",
+]);
+
+function normalizeToolKind(kind: unknown): EffectAcpSchema.ToolKind | undefined {
+  if (typeof kind !== "string") {
+    return undefined;
+  }
+  const trimmed = kind.trim();
+  return ACP_TOOL_KINDS.has(trimmed as EffectAcpSchema.ToolKind)
+    ? (trimmed as EffectAcpSchema.ToolKind)
+    : undefined;
+}
+
+function inferToolKindFromTitle(
+  title: string | null | undefined,
+): EffectAcpSchema.ToolKind | undefined {
+  const normalizedTitle = title?.trim().toLowerCase();
+  if (!normalizedTitle) {
+    return undefined;
+  }
+
+  if (
+    normalizedTitle.startsWith("running:") ||
+    normalizedTitle.startsWith("run:") ||
+    normalizedTitle.startsWith("executing:")
+  ) {
+    return "execute";
+  }
+
+  if (
+    /^(editing|edit|modifying|writing|creating|updating|deleting|moving|renaming)\b/.test(
+      normalizedTitle,
+    )
+  ) {
+    return "edit";
+  }
+
+  if (/^(reading|read|opening|viewing)\b/.test(normalizedTitle)) {
+    return "read";
+  }
+
+  return undefined;
 }
 
 function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
@@ -427,11 +483,13 @@ export function mergeToolCallState(
 export function parsePermissionRequest(
   params: EffectAcpSchema.RequestPermissionRequest,
 ): AcpPermissionRequest {
+  const kind =
+    normalizeToolKind(params.toolCall.kind) ?? inferToolKindFromTitle(params.toolCall.title);
   const toolCall = makeToolCallState(
     {
       toolCallId: params.toolCall.toolCallId,
       title: params.toolCall.title,
-      kind: params.toolCall.kind,
+      kind,
       status: params.toolCall.status,
       rawInput: params.toolCall.rawInput,
       rawOutput: params.toolCall.rawOutput,
@@ -440,14 +498,13 @@ export function parsePermissionRequest(
     },
     { fallbackStatus: "pending" },
   );
-  const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
   const detail =
     toolCall?.command ??
     toolCall?.title ??
     toolCall?.detail ??
     (typeof params.sessionId === "string" ? `Session ${params.sessionId}` : undefined);
   return {
-    kind,
+    kind: kind ?? "unknown",
     ...(detail ? { detail } : {}),
     ...(toolCall ? { toolCall } : {}),
   };
@@ -572,6 +629,30 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           rawPayload: params,
         });
       }
+      break;
+    }
+    case "usage_update": {
+      // **UNSTABLE** ACP capability: context window + cost update for a
+      // session. `used` is the tokens currently in context, `size` the total
+      // context window. Map it onto the same token-usage snapshot Codex/Claude
+      // emit so the shared context-window meter renders for ACP providers.
+      const usedTokens =
+        typeof upd.used === "number" && Number.isFinite(upd.used) && upd.used > 0
+          ? Math.trunc(upd.used)
+          : undefined;
+      if (usedTokens === undefined) {
+        break;
+      }
+      const maxTokens =
+        typeof upd.size === "number" && Number.isFinite(upd.size) && upd.size > 0
+          ? Math.trunc(upd.size)
+          : undefined;
+      events.push({
+        _tag: "UsageUpdated",
+        usedTokens,
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        rawPayload: params,
+      });
       break;
     }
     default:

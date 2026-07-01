@@ -45,6 +45,7 @@ export interface AcpPatchedProtocolOptions {
   readonly stdio: Stdio.Stdio;
   readonly terminationError?: Effect.Effect<AcpError.AcpError>;
   readonly serverRequestMethods: ReadonlySet<string>;
+  readonly wireCompatibility?: AcpWireCompatibilityOptions;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocolLogEvent) => Effect.Effect<void, never>;
@@ -66,6 +67,20 @@ export interface AcpPatchedProtocol {
   readonly notify: (method: string, payload: unknown) => Effect.Effect<void, AcpError.AcpError>;
 }
 
+export interface AcpWireCompatibilityOptions {
+  /**
+   * ACP is newline-delimited JSON-RPC, but some CLIs have emitted
+   * pretty-printed JSON during early startup. Enable this for agents where we
+   * prefer bounded tolerance over failing the whole session on framing drift.
+   */
+  readonly tolerateMultilineJson?: boolean;
+  /**
+   * When multiline tolerance is enabled, ignore non-JSON stdout lines instead
+   * of failing the protocol. Stderr should still carry diagnostics.
+   */
+  readonly ignoreNonJsonStdout?: boolean;
+}
+
 interface AcpPendingRequest {
   readonly deferred: Deferred.Deferred<unknown, AcpError.AcpError>;
   readonly method: string;
@@ -76,17 +91,22 @@ const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
 const parserFactory = RpcSerialization.ndJsonRpc();
+const isRpcServerCompatibleRequestId = (requestId: string) => /^(0|[1-9]\d*)$/.test(requestId);
 
 export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
+  const wireDecoder = makeWireCompatibilityDecoder(options.wireCompatibility);
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
   const disconnects = yield* Queue.unbounded<number>();
   const outgoing = yield* Queue.unbounded<string | Uint8Array, Cause.Done<void>>();
   const nextRequestId = yield* Ref.make(1n);
+  const nextServerRequestId = yield* Ref.make(1n);
+  const serverRequestIdAliases = yield* Ref.make(new Map<string, string>());
+  const serverNativeRequestIds = yield* Ref.make(new Set<string>());
   const terminationHandled = yield* Ref.make(false);
   const extPending = yield* Ref.make(new Map<string, AcpPendingRequest>());
 
@@ -101,6 +121,52 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       options.logger?.(event) ??
       Effect.logDebug("ACP protocol event").pipe(Effect.annotateLogs({ event }))
     );
+  };
+
+  const encodeNonNumericExit = (
+    message: Extract<RpcMessage.FromServerEncoded, { readonly _tag: "Exit" }>,
+  ): string | undefined => {
+    if (isRpcServerCompatibleRequestId(message.requestId)) {
+      return undefined;
+    }
+
+    if (message.exit._tag === "Success") {
+      return `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: message.requestId,
+        result: message.exit.value,
+      })}\n`;
+    }
+
+    const failure = message.exit.cause.find((entry) => entry._tag === "Fail");
+    const error = failure?.error ?? {
+      code: -32603,
+      message: "Internal error",
+    };
+    return `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.requestId,
+      error,
+    })}\n`;
+  };
+
+  // ACP client→agent notifications (e.g. `session/cancel`) are modeled by the
+  // RPC layer as a Request with an empty id. Encoded generically they go on the
+  // wire as a JSON-RPC *request* carrying `"id":""`, which strict agents reject
+  // (kiro-cli replies `-32601 Method not found` because it only registers a
+  // notification handler for these methods). Emit them as true JSON-RPC
+  // notifications — no id — so cancel and friends are actually honored.
+  const encodeClientNotification = (
+    message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
+  ): string | undefined => {
+    if (message._tag !== "Request" || message.id !== "") {
+      return undefined;
+    }
+    return `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: message.tag,
+      params: message.payload,
+    })}\n`;
   };
 
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
@@ -121,7 +187,10 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
           : undefined;
     const requestId = encodedRequestId === "" ? undefined : encodedRequestId;
     const encoded = yield* Effect.try({
-      try: () => parser.encode(message),
+      try: () =>
+        (message._tag === "Exit" ? encodeNonNumericExit(message) : undefined) ??
+        encodeClientNotification(message) ??
+        parser.encode(message),
       catch: (cause) => AcpError.AcpProtocolParseError.fromEncodingError(method, requestId, cause),
     });
 
@@ -259,6 +328,91 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     );
   };
 
+  const allocateServerRequestAliasId = Effect.fn("allocateServerRequestAliasId")(function* () {
+    const nativeRequestIds = yield* Ref.get(serverNativeRequestIds);
+    const aliases = yield* Ref.get(serverRequestIdAliases);
+    return yield* Ref.modify(nextServerRequestId, (current) => {
+      let candidate = current;
+      while (nativeRequestIds.has(String(candidate)) || aliases.has(String(candidate))) {
+        candidate += 1n;
+      }
+      return [String(candidate), candidate + 1n] as const;
+    });
+  });
+
+  const normalizeServerRequestId = (
+    message: RpcMessage.RequestEncoded,
+  ): Effect.Effect<RpcMessage.RequestEncoded> => {
+    return Effect.all({
+      aliases: Ref.get(serverRequestIdAliases),
+      nativeRequestIds: Ref.get(serverNativeRequestIds),
+    }).pipe(
+      Effect.flatMap(({ aliases, nativeRequestIds }) => {
+        if (
+          isRpcServerCompatibleRequestId(message.id) &&
+          !aliases.has(message.id) &&
+          !nativeRequestIds.has(message.id)
+        ) {
+          return Ref.update(serverNativeRequestIds, (requestIds) => {
+            const next = new Set(requestIds);
+            next.add(message.id);
+            return next;
+          }).pipe(Effect.as(message));
+        }
+
+        return allocateServerRequestAliasId().pipe(
+          Effect.flatMap((internalRequestId) =>
+            Ref.update(serverRequestIdAliases, (aliases) => {
+              const next = new Map(aliases);
+              next.set(internalRequestId, message.id);
+              return next;
+            }).pipe(
+              Effect.as({
+                ...message,
+                id: internalRequestId,
+              }),
+            ),
+          ),
+        );
+      }),
+    );
+  };
+
+  const restoreServerResponseRequestId = (
+    response: RpcMessage.FromServerEncoded,
+  ): Effect.Effect<RpcMessage.FromServerEncoded> => {
+    if (!("requestId" in response) || typeof response.requestId !== "string") {
+      return Effect.succeed(response);
+    }
+
+    return Ref.modify(serverRequestIdAliases, (aliases) => {
+      const originalRequestId = aliases.get(response.requestId);
+      if (!originalRequestId) {
+        return [response, aliases] as const;
+      }
+
+      const next = new Map(aliases);
+      if (response._tag === "Exit") {
+        next.delete(response.requestId);
+      }
+      return [{ ...response, requestId: originalRequestId }, next] as const;
+    }).pipe(
+      Effect.flatMap((restoredResponse) => {
+        if (restoredResponse !== response || response._tag !== "Exit") {
+          return Effect.succeed(restoredResponse);
+        }
+        return Ref.update(serverNativeRequestIds, (requestIds) => {
+          if (!requestIds.has(response.requestId)) {
+            return requestIds;
+          }
+          const next = new Set(requestIds);
+          next.delete(response.requestId);
+          return next;
+        }).pipe(Effect.as(response));
+      }),
+    );
+  };
+
   const handleRequestEncoded = (message: RpcMessage.RequestEncoded) => {
     if (message.id === "") {
       if (message.tag === CLIENT_METHODS.session_update) {
@@ -334,40 +488,51 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       );
     }
 
-    return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
+    return normalizeServerRequestId(message).pipe(
+      Effect.flatMap((normalizedMessage) => Queue.offer(serverQueue, normalizedMessage)),
+      Effect.asVoid,
+    );
   };
 
-  const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
-    Ref.get(extPending).pipe(
+  const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) => {
+    const normalizedMessage = normalizeProtocolErrorExit(message);
+    return Ref.get(extPending).pipe(
       Effect.flatMap((pending) => {
-        const pendingRequest = pending.get(message.requestId);
+        if (!pending.has(normalizedMessage.requestId)) {
+          return Queue.offer(clientQueue, normalizedMessage).pipe(Effect.asVoid);
+        }
+        const pendingRequest = pending.get(normalizedMessage.requestId);
         if (!pendingRequest) {
-          return Queue.offer(clientQueue, message).pipe(Effect.asVoid);
+          return Queue.offer(clientQueue, normalizedMessage).pipe(Effect.asVoid);
         }
-        if (message.exit._tag === "Success") {
-          return completeExtPendingSuccess(message.requestId, message.exit.value);
+        if (normalizedMessage.exit._tag === "Success") {
+          return completeExtPendingSuccess(
+            normalizedMessage.requestId,
+            normalizedMessage.exit.value,
+          );
         }
-        const failure = message.exit.cause.find((entry) => entry._tag === "Fail");
-        if (failure && isProtocolError(failure.error)) {
+        const failure = findProtocolErrorFailure(normalizedMessage.exit.cause);
+        if (failure) {
           return completeExtPendingFailure(
-            message.requestId,
-            AcpError.AcpRequestError.fromProtocolError(failure.error, {
+            normalizedMessage.requestId,
+            AcpError.AcpRequestError.fromProtocolError(failure, {
               method: pendingRequest.method,
-              requestId: message.requestId,
-              cause: message.exit.cause,
+              requestId: normalizedMessage.requestId,
+              cause: normalizedMessage.exit.cause,
             }),
           );
         }
         return completeExtPendingFailure(
-          message.requestId,
+          normalizedMessage.requestId,
           AcpError.AcpRequestError.fromExtensionResponseFailure(
             pendingRequest.method,
-            message.requestId,
-            message.exit.cause,
+            normalizedMessage.requestId,
+            normalizedMessage.exit.cause,
           ),
         );
       }),
     );
+  };
 
   const routeDecodedMessage = (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
@@ -404,6 +569,59 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
   };
 
+  const decodeWireMessages = (data: string | Uint8Array) =>
+    Effect.try({
+      try: () => {
+        if (!wireDecoder) {
+          return parser.decode(data) as ReadonlyArray<
+            RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+          >;
+        }
+        return wireDecoder
+          .decode(data)
+          .flatMap(
+            (frame) =>
+              parser.decode(`${compactJsonFrame(frame)}\n`) as ReadonlyArray<
+                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+              >,
+          );
+      },
+      catch: (cause) =>
+        new AcpError.AcpProtocolParseError({
+          operation: "decode-wire-message",
+          cause,
+        }),
+    });
+
+  const decodeFlushedWireMessages = () =>
+    Effect.try({
+      try: () => {
+        if (!wireDecoder) {
+          return [];
+        }
+        return wireDecoder
+          .flush()
+          .flatMap(
+            (frame) =>
+              parser.decode(`${compactJsonFrame(frame)}\n`) as ReadonlyArray<
+                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+              >,
+          );
+      },
+      catch: (cause) =>
+        new AcpError.AcpProtocolParseError({
+          operation: "decode-wire-message",
+          cause,
+        }),
+    });
+
+  const routeDecodedMessages = (
+    messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>,
+  ) =>
+    Effect.forEach(messages, routeDecodedMessage, {
+      discard: true,
+    });
+
   yield* options.stdio.stdin.pipe(
     Stream.runForEach((data) =>
       logProtocol({
@@ -411,19 +629,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         stage: "raw",
         payload: typeof data === "string" ? data : new TextDecoder().decode(data),
       }).pipe(
-        Effect.flatMap(() =>
-          Effect.try({
-            try: () =>
-              parser.decode(data) as ReadonlyArray<
-                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
-              >,
-            catch: (cause) =>
-              new AcpError.AcpProtocolParseError({
-                operation: "decode-wire-message",
-                cause,
-              }),
-          }),
-        ),
+        Effect.flatMap(() => decodeWireMessages(data)),
         Effect.tap((messages) =>
           logProtocol({
             direction: "incoming",
@@ -447,11 +653,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
             },
           }),
         ),
-        Effect.flatMap((messages) =>
-          Effect.forEach(messages, routeDecodedMessage, {
-            discard: true,
-          }),
-        ),
+        Effect.flatMap(routeDecodedMessages),
       ),
     ),
     Effect.matchEffect({
@@ -465,9 +667,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleTermination(() => Effect.succeed(normalized));
       },
       onSuccess: () =>
-        handleTermination(
-          () =>
-            options.terminationError ?? Effect.succeed(new AcpError.AcpInputStreamEndedError({})),
+        decodeFlushedWireMessages().pipe(
+          Effect.flatMap(routeDecodedMessages),
+          Effect.catch((error) => handleTermination(() => Effect.succeed(error))),
+          Effect.andThen(
+            handleTermination(
+              () =>
+                options.terminationError ??
+                Effect.succeed(new AcpError.AcpInputStreamEndedError({})),
+            ),
+          ),
         ),
     }),
     Effect.forkScoped,
@@ -504,7 +713,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         Effect.forever,
       ),
     disconnects,
-    send: (_clientId, response) => offerOutgoing(response).pipe(Effect.orDie),
+    send: (_clientId, response) =>
+      restoreServerResponseRequestId(response).pipe(Effect.flatMap(offerOutgoing), Effect.orDie),
     end: (_clientId) => Queue.end(outgoing),
     clientIds: Effect.succeed(new Set([0])),
     initialMessage: Effect.succeedNone,
@@ -558,9 +768,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   } satisfies AcpPatchedProtocol;
 });
 
-function isProtocolError(
-  value: unknown,
-): value is { code: number; message: string; data?: unknown } {
+type ProtocolError = { code: number; message: string; data?: unknown };
+type ProtocolFailureCause = Extract<
+  RpcMessage.ResponseExitEncoded["exit"],
+  { readonly _tag: "Failure" }
+>["cause"];
+
+function isProtocolError(value: unknown): value is ProtocolError {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -569,4 +783,220 @@ function isProtocolError(
     "message" in value &&
     typeof value.message === "string"
   );
+}
+
+function normalizeProtocolErrorExit(
+  message: RpcMessage.ResponseExitEncoded,
+): RpcMessage.ResponseExitEncoded {
+  if (message.exit._tag !== "Failure") {
+    return message;
+  }
+
+  let changed = false;
+  const cause = message.exit.cause.map((entry) => {
+    if (entry._tag !== "Die" || !isProtocolError(entry.defect)) {
+      return entry;
+    }
+    changed = true;
+    return {
+      _tag: "Fail" as const,
+      error: entry.defect,
+    };
+  });
+
+  return changed
+    ? {
+        ...message,
+        exit: {
+          _tag: "Failure" as const,
+          cause,
+        },
+      }
+    : message;
+}
+
+function findProtocolErrorFailure(cause: ProtocolFailureCause): ProtocolError | undefined {
+  for (const entry of cause) {
+    if (entry._tag === "Fail" && isProtocolError(entry.error)) {
+      return entry.error;
+    }
+  }
+  return undefined;
+}
+
+interface WireCompatibilityDecoder {
+  readonly decode: (data: string | Uint8Array) => ReadonlyArray<string>;
+  readonly flush: () => ReadonlyArray<string>;
+}
+
+const MAX_MULTILINE_JSON_LENGTH = 128_000;
+const MAX_MULTILINE_JSON_LINES = 256;
+
+function makeWireCompatibilityDecoder(
+  options: AcpWireCompatibilityOptions | undefined,
+): WireCompatibilityDecoder | undefined {
+  if (options?.tolerateMultilineJson !== true) {
+    return undefined;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let pendingJson = "";
+  let pendingJsonLineCount = 0;
+
+  const resetPendingJson = () => {
+    pendingJson = "";
+    pendingJsonLineCount = 0;
+  };
+
+  const tryEmit = (candidate: string, frames: Array<string>): boolean => {
+    try {
+      JSON.parse(candidate);
+      frames.push(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleLine = (line: string, frames: Array<string>): void => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    if (pendingJson) {
+      const nextCandidate = `${pendingJson}\n${trimmed}`;
+      if (tryEmit(nextCandidate, frames)) {
+        resetPendingJson();
+        return;
+      }
+      pendingJsonLineCount += 1;
+      if (
+        classifyJsonContainer(nextCandidate) === "incomplete" &&
+        nextCandidate.length <= MAX_MULTILINE_JSON_LENGTH &&
+        pendingJsonLineCount <= MAX_MULTILINE_JSON_LINES
+      ) {
+        pendingJson = nextCandidate;
+        return;
+      }
+      resetPendingJson();
+      handleLine(trimmed, frames);
+      return;
+    }
+
+    if (tryEmit(trimmed, frames)) {
+      return;
+    }
+
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      pendingJson = trimmed;
+      pendingJsonLineCount = 1;
+      return;
+    }
+
+    if (options.ignoreNonJsonStdout === true) {
+      return;
+    }
+
+    // Preserve strict failure semantics for invalid JSON when callers only ask
+    // for multiline tolerance. Feeding the raw line through the parser keeps the
+    // existing error shape.
+    frames.push(trimmed);
+  };
+
+  return {
+    decode: (data) => {
+      const frames: Array<string> = [];
+      buffer += typeof data === "string" ? data : decoder.decode(data);
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        handleLine(line, frames);
+      }
+      return frames;
+    },
+    flush: () => {
+      const frames: Array<string> = [];
+      const remaining = buffer.trim();
+      buffer = "";
+      if (remaining) {
+        handleLine(remaining, frames);
+      }
+      if (pendingJson && tryEmit(pendingJson, frames)) {
+        resetPendingJson();
+      }
+      return frames;
+    },
+  };
+}
+
+function compactJsonFrame(frame: string): string {
+  return JSON.stringify(JSON.parse(frame));
+}
+
+function classifyJsonContainer(input: string): "complete" | "incomplete" | "invalid" {
+  const stack: Array<"{" | "["> = [];
+  let inString = false;
+  let escaped = false;
+  let started = false;
+  let complete = false;
+
+  for (const char of input) {
+    if (!started && /\s/.test(char)) {
+      continue;
+    }
+    if (complete) {
+      if (/\s/.test(char)) {
+        continue;
+      }
+      return "invalid";
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      if (!started) {
+        return "invalid";
+      }
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      if (!started) {
+        started = true;
+      }
+      stack.push(char);
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      const expected = char === "}" ? "{" : "[";
+      if (stack.pop() !== expected) {
+        return "invalid";
+      }
+      if (stack.length === 0) {
+        complete = true;
+      }
+      continue;
+    }
+    if (!started && !/\s/.test(char)) {
+      return "invalid";
+    }
+  }
+
+  if (!started || inString || stack.length > 0) {
+    return "incomplete";
+  }
+  return complete ? "complete" : "invalid";
 }

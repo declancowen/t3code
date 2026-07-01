@@ -21,6 +21,24 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("derives Kiro config fields without provider-specific form logic", () => {
+    const kiro = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("kiro")];
+
+    expect(kiro).toBeDefined();
+    expect(deriveProviderSettingsFields(kiro!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "agentName",
+    ]);
+    expect(deriveProviderSettingsFields(kiro!)).toContainEqual(
+      expect.objectContaining({
+        key: "homePath",
+        label: "KIRO_HOME path",
+        placeholder: "~/.kiro",
+      }),
+    );
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();
