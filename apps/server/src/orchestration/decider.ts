@@ -437,16 +437,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // a user message.
       const threadProviderName = targetThread.session?.providerName ?? null;
       const threadCanSteer = providerSupportsSteering(threadProviderName);
-      // Park the message in the thread's visible queue if a turn is already
-      // running or messages are already queued (preserve FIFO). The dispatch
-      // reactor sends it as a real turn once the active turn completes.
+      // Park the message in the thread's visible queue only while a turn is
+      // actually running. When the session is idle we always start a real turn,
+      // even if earlier messages are still pinned in the queue (e.g. left over
+      // after a Stop) — otherwise a non-empty queue would swallow every new
+      // send and, with nothing left to complete, the queue would never drain
+      // and the prompts would appear to vanish. Pinned messages keep their
+      // order and drain on the next turn completion (or via "Send now").
       // Plan-implementation turns are never queued.
-      if (
-        queueEnabled &&
-        !threadCanSteer &&
-        sourceProposedPlan === undefined &&
-        (turnActive || targetThread.queuedMessages.length > 0)
-      ) {
+      if (queueEnabled && !threadCanSteer && sourceProposedPlan === undefined && turnActive) {
         return {
           ...(yield* withEventBase({
             aggregateKind: "thread",
@@ -851,13 +850,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const head = targetThread.queuedMessages.find((entry) => entry.status === "queued");
+      // "Send now" targets a specific queued message; the reactor's FIFO drain
+      // omits `messageId` and takes the head. Either way the target must still
+      // be queued (not already dispatching).
+      const queuedCandidates = targetThread.queuedMessages.filter(
+        (entry) => entry.status === "queued",
+      );
+      const head =
+        command.messageId !== undefined
+          ? queuedCandidates.find((entry) => entry.id === command.messageId)
+          : queuedCandidates[0];
       const turnActive =
         targetThread.session !== null &&
         targetThread.session.status !== "stopped" &&
         targetThread.session.activeTurnId !== null;
       // Nothing to drain, or a turn is still running — no-op. The reactor pokes
-      // this again on the next turn completion.
+      // this again on the next turn completion, and "Send now" stops the active
+      // turn first and retries once the session is idle.
       if (!head || turnActive) {
         return [];
       }

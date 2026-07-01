@@ -1,19 +1,22 @@
 import type { MessageId, OrchestrationQueuedMessage } from "@t3tools/contracts";
-import { CheckIcon, ClockIcon, Loader2Icon, PencilIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ClockIcon, Loader2Icon, PencilIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 
 /**
  * Pending messages parked in the thread's managed queue (sent while a turn was
- * active). Pinned just above the composer. Each item can be edited inline or
- * removed while it is still `queued`; once it is `dispatching` it is read-only.
- * They send in order (FIFO) as soon as the current reply finishes.
+ * active). Pinned just above the composer. Each item can be edited inline,
+ * sent immediately ("Send now"), or removed while it is still `queued`; once it
+ * is `dispatching` it is read-only. They otherwise send in order (FIFO) as soon
+ * as the current reply finishes. "Send now" stops the active turn and dispatches
+ * the chosen message right away.
  */
 export function QueuedMessagesBar(props: {
   queued: ReadonlyArray<OrchestrationQueuedMessage>;
   onRemove: (messageId: MessageId) => void;
   onEdit: (messageId: MessageId, text: string) => void;
+  onDispatch: (messageId: MessageId) => void;
 }) {
   const [editingId, setEditingId] = useState<MessageId | null>(null);
   const [draft, setDraft] = useState("");
@@ -128,6 +131,15 @@ export function QueuedMessagesBar(props: {
                     <span className="shrink-0 text-[11px] text-primary">Sending…</span>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
+                      <button
+                        type="button"
+                        className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:cursor-pointer hover:bg-primary/10 hover:text-primary"
+                        onClick={() => props.onDispatch(message.id)}
+                        aria-label="Send queued message now"
+                        title="Send now (stops the current reply)"
+                      >
+                        <ArrowUpIcon className="size-3.5" />
+                      </button>
                       <button
                         type="button"
                         className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:cursor-pointer hover:bg-foreground/10 hover:text-foreground"

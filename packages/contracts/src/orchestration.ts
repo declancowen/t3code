@@ -663,6 +663,21 @@ const ThreadQueuedMessageEditCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Dispatch a parked queued message as a real turn. Two callers:
+//   • the server dispatch reactor pokes it (without `messageId`) when a turn
+//     completes to drain the FIFO head, and
+//   • the client "Send now" action sends it with an explicit `messageId` to
+//     flush a specific queued message once the session is idle.
+// The decider is a no-op while a turn is still active, so the client stops the
+// active turn first ("stop and resume") and dispatches once the turn settles.
+const ThreadQueuedMessageDispatchCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-message.dispatch"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: Schema.optional(MessageId),
+  createdAt: IsoDateTime,
+});
+
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
   commandId: CommandId,
@@ -711,6 +726,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadQueuedMessageRemoveCommand,
   ThreadQueuedMessageEditCommand,
+  ThreadQueuedMessageDispatchCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -734,6 +750,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadQueuedMessageRemoveCommand,
   ThreadQueuedMessageEditCommand,
+  ThreadQueuedMessageDispatchCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -806,13 +823,6 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadQueuedMessageDispatchCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-message.dispatch"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  createdAt: IsoDateTime,
-});
-
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -821,7 +831,6 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
-  ThreadQueuedMessageDispatchCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 

@@ -219,3 +219,51 @@ it.effect("dispatch is a no-op while a turn is still active", () =>
     assert.deepEqual(events, []);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("does NOT enqueue an idle send even when messages are still queued", () =>
+  Effect.gen(function* () {
+    // A queue left pinned after a Stop must never swallow a fresh send while the
+    // session is idle — otherwise nothing would ever start the next turn and the
+    // prompt would appear to vanish. The new message starts a real turn; the
+    // pinned message stays queued and drains on completion or via "Send now".
+    const rm = yield* seed({ activeTurnId: null, queuedMessageId: "queued-1" });
+    const events = yield* decide(turnStartCommand, rm, true);
+    const types = events.map((e) => e.type);
+    assert.deepEqual(types, ["thread.message-sent", "thread.turn-start-requested"]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("dispatch targets a specific queued message when messageId is provided", () =>
+  Effect.gen(function* () {
+    const rm = yield* seed({ activeTurnId: null, queuedMessageId: "queued-1" });
+    const command: OrchestrationCommand = {
+      type: "thread.queued-message.dispatch",
+      commandId: asCommandId("cmd-dispatch"),
+      threadId: THREAD,
+      messageId: asMessageId("queued-1"),
+      createdAt: NOW,
+    };
+    const events = yield* decide(command, rm, true);
+    const types = events.map((e) => e.type);
+    assert.deepEqual(types, [
+      "thread.queued-message-removed",
+      "thread.message-sent",
+      "thread.turn-start-requested",
+    ]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("dispatch is a no-op when the targeted messageId is not queued", () =>
+  Effect.gen(function* () {
+    const rm = yield* seed({ activeTurnId: null, queuedMessageId: "queued-1" });
+    const command: OrchestrationCommand = {
+      type: "thread.queued-message.dispatch",
+      commandId: asCommandId("cmd-dispatch"),
+      threadId: THREAD,
+      messageId: asMessageId("does-not-exist"),
+      createdAt: NOW,
+    };
+    const events = yield* decide(command, rm, true);
+    assert.deepEqual(events, []);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

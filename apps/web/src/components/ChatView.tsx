@@ -1022,6 +1022,9 @@ function ChatViewContent(props: ChatViewProps) {
   const editThreadQueuedMessage = useAtomCommand(threadEnvironment.editQueuedMessage, {
     reportFailure: false,
   });
+  const dispatchThreadQueuedMessage = useAtomCommand(threadEnvironment.dispatchQueuedMessage, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -1162,6 +1165,9 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  // When "Send now" is used while a turn is active, we stop the turn first and
+  // remember which queued message to dispatch once the session settles.
+  const pendingDispatchMessageIdRef = useRef<MessageId | null>(null);
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -3590,6 +3596,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
       return [];
     });
+    pendingDispatchMessageIdRef.current = null;
     resetLocalDispatch();
     setExpandedImage(null);
   }, [draftId, resetLocalDispatch, threadId]);
@@ -4332,6 +4339,90 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThread, editThreadQueuedMessage, environmentId],
   );
+
+  // "Send now": dispatch a specific queued message immediately. Kiro's CLI runs
+  // one prompt per session, so if a turn is still active we stop it first and
+  // let the effect below dispatch the message once the session goes idle
+  // ("stop and resume"). When already idle we dispatch straight away.
+  const onSendQueuedMessageNow = useCallback(
+    async (messageId: MessageId) => {
+      if (!activeThread) return;
+      const session = activeThread.session;
+      const sessionTurnActive =
+        session != null && session.status !== "stopped" && session.activeTurnId != null;
+      if (sessionTurnActive || isWorking) {
+        pendingDispatchMessageIdRef.current = messageId;
+        const result = await interruptThreadTurn({
+          environmentId,
+          input: buildThreadTurnInterruptInput(activeThread),
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          pendingDispatchMessageIdRef.current = null;
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Failed to stop the current turn.",
+          );
+        }
+        return;
+      }
+      const result = await dispatchThreadQueuedMessage({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          messageId,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to send queued message.",
+        );
+      }
+    },
+    [
+      activeThread,
+      dispatchThreadQueuedMessage,
+      environmentId,
+      interruptThreadTurn,
+      isWorking,
+      setThreadError,
+    ],
+  );
+
+  // Once a "Send now" interrupt lands and the session is idle again, dispatch
+  // the remembered queued message. Driven by observed session state so it never
+  // fires while a turn is still winding down.
+  useEffect(() => {
+    const pendingMessageId = pendingDispatchMessageIdRef.current;
+    if (!pendingMessageId || !activeThread) return;
+    const session = activeThread.session;
+    const sessionTurnActive =
+      session != null && session.status !== "stopped" && session.activeTurnId != null;
+    if (phase === "running" || isSendBusy || sessionTurnActive) return;
+    const stillQueued = (activeThread.queuedMessages ?? []).some(
+      (entry) => entry.id === pendingMessageId && entry.status === "queued",
+    );
+    pendingDispatchMessageIdRef.current = null;
+    if (!stillQueued) return;
+    void (async () => {
+      const result = await dispatchThreadQueuedMessage({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          messageId: pendingMessageId,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to send queued message.",
+        );
+      }
+    })();
+  }, [activeThread, dispatchThreadQueuedMessage, environmentId, isSendBusy, phase, setThreadError]);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -5223,6 +5314,7 @@ function ChatViewContent(props: ChatViewProps) {
                     queued={activeThread?.queuedMessages ?? []}
                     onRemove={onRemoveQueuedMessage}
                     onEdit={onEditQueuedMessage}
+                    onDispatch={onSendQueuedMessageNow}
                   />
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   <div className="relative z-10">

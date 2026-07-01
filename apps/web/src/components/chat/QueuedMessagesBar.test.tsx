@@ -19,6 +19,7 @@ describe("QueuedMessagesBar", () => {
         ]}
         onRemove={() => {}}
         onEdit={() => {}}
+        onDispatch={() => {}}
       />,
     );
 
